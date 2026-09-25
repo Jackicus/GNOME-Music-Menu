@@ -68,8 +68,9 @@ track-change but not a continuous position, so `Player` reckons position
 locally off the monotonic clock between corrections (pause, seek, track
 change, and a periodic `amctl.run(['now-playing'])` fallback when Chrome's
 MPRIS doesn't expose Shuffle/LoopStatus). It emits `changed` and roughly
-one `position` tick a second while playing; `state` is documented at the
-top of `player.js`.
+one `position` tick a second while playing; its `get state()` is the shape
+(`status`, `track`, `positionUs`, `canNext`/`canPrevious`/`canSeek`,
+`shuffle`, `repeat`).
 
 ## `library.json`
 
