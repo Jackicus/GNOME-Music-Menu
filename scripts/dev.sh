@@ -22,7 +22,7 @@ set -euo pipefail
 
 UUID="music-menu@jackt"
 # Append to this on each rename so `prune` sweeps up every superseded build.
-LEGACY_UUIDS=("gnomeflix@jackt" "media-workspace-desktop@jackt")
+LEGACY_UUIDS=()
 CACHE_DIR="$HOME/.cache/music-menu"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -275,7 +275,6 @@ case "${1:-}" in
     sync)        shift; cmd_sync "$@" ;;
     signin)      shift; cmd_signin "$@" ;;
     engine-stop) shift; cmd_engine_stop "$@" ;;
-    scan)        shift; cmd_sync "$@" ;;
     prune)       cmd_prune ;;
     uninstall)   cmd_uninstall ;;
     status)      cmd_status ;;

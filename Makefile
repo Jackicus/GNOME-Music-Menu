@@ -4,14 +4,12 @@ DEV := ./scripts/dev.sh
 NESTED := ./scripts/nested.sh
 
 .PHONY: all link install reload logs pack sync signin engine-stop prune uninstall status stalls clean help \
-        nested nested-headless nested-stop nested-status preview scan
+        nested nested-headless nested-stop nested-status preview
 
 all: install
 
 link install reload logs pack sync signin engine-stop prune uninstall status stalls clean:
 	@$(DEV) $@
-
-scan: sync
 
 # Nested shell -- a throwaway second GNOME Shell for visual testing. Opens a live
 # mirror window on the desktop so you can watch; nested-headless skips that.

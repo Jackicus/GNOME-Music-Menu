@@ -19,10 +19,9 @@ per item). Read it before touching anything under `src/lib/` that isn't
 listed below as new. This file does not repeat it — it only documents what
 Music Menu adds on top.
 
-See `AGENTS.md` for the full contracts (the `am.py` command table, the
-`library.json` shape, the settings list, the module contracts between
-parallel build jobs). This file is the shorter orientation for whoever picks
-the code up next.
+`src/backend/README.md` is the backend's reference: the `am.py` command
+table, the `library.json` shape and the env overrides. This file is the
+shorter orientation for whoever picks the code up next.
 
 ## What's new: the engine
 
@@ -69,8 +68,8 @@ track-change but not a continuous position, so `Player` reckons position
 locally off the monotonic clock between corrections (pause, seek, track
 change, and a periodic `amctl.run(['now-playing'])` fallback when Chrome's
 MPRIS doesn't expose Shuffle/LoopStatus). It emits `changed` and roughly
-one `position` tick a second while playing — see the `Player` contract in
-`AGENTS.md` for the exact shape.
+one `position` tick a second while playing; `state` is documented at the
+top of `player.js`.
 
 ## `library.json`
 
@@ -78,8 +77,8 @@ The UI never scrapes and never talks to Chrome for a listing. `am.py sync`
 (run from Preferences → Apple Music → Sync, or on `sync-interval`) is the
 only writer of `~/.cache/music-menu/library.json` and its `art/` cache;
 `src/lib/library.js` only reads it. The full `Item`/`Track` shape and the
-`sections`/`shelves` layout are in `AGENTS.md` — don't restate them here or
-let them drift out of sync with that file.
+`sections`/`shelves` layout are in `src/backend/README.md` — don't restate
+them here or let them drift out of sync with that file.
 
 ## Settings
 
