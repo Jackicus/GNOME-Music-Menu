@@ -62,6 +62,7 @@ import {PlayerBar} from './playerBar.js';
 import {NowPlayingView} from './nowPlaying.js';
 import {openItemMenu} from './itemMenu.js';
 import {MusicSearchProvider} from './searchProvider.js';
+import {notifyFailure} from './notify.js';
 import * as amctl from './amctl.js';
 
 // The section a search result's kind maps onto, for the tab its detail is
@@ -75,6 +76,9 @@ const KIND_TO_SECTION = {
 const OUTER_MARGIN = 28;
 // workspaceAnimation.js WINDOW_ANIMATION_TIME — exported only from 50, so restated.
 const WORKSPACE_SLIDE_TIME = 250;
+// An automatic sync found overdue at enable waits this long first: a sync
+// starts Chrome, and the login it usually coincides with has enough to do.
+const SYNC_GRACE_SECONDS = 180;
 // The places a workspace of ours can show, as `_placeForWorkspace` names them:
 // the library, or a picked item on a page of its own. There is one library,
 // one pane and one pick, so there is only ever one of each.
@@ -192,6 +196,8 @@ export class MusicMenuApp {
         // The overview's search entry, backed by am.py search.
         this._searchProvider = null;
         this._syncTimer = 0;
+        // The sync under way, if one is: a second ask joins it.
+        this._syncing = null;
         // Remotes, controllers and keys of the user's own (controls.js).
         this._controls = new Controls(this._settings, {
             isActive: () => this._controlsActive(),
@@ -217,6 +223,7 @@ export class MusicMenuApp {
         this._syncPlayerBar();
         this._searchProvider = new MusicSearchProvider({
             onActivate: item => this._activateSearchResult(item),
+            gicon: this._button.gicon,
         });
         this._searchProvider.register();
         this._sections = loadLibrary();
@@ -845,7 +852,7 @@ export class MusicMenuApp {
     }
 
     // library.json carries a track list for what is in the library, and only
-    // a tile for what a shelf recommends — see AGENTS.md's `sync`. A pick
+    // a tile for what a shelf recommends (backend/README.md, `sync`). A pick
     // without one opens at once on what it has, and its list follows from
     // `am.py item`, filled into the item itself so a second look is instant.
     _needsGroups(item) {
@@ -1066,8 +1073,9 @@ export class MusicMenuApp {
         this._dialog?.setNowPlayingTrack(id);
     }
 
-    // Automatic sync: every 'sync-interval' minutes (0 = off), and once on
-    // enable if 'last-sync' is already older than that.
+    // Automatic sync: every 'sync-interval' minutes (0 = off). One found
+    // overdue at enable runs after a grace period rather than at once, so a
+    // login is not also a Chrome start and a library fetch.
     _scheduleSync() {
         if (this._syncTimer) {
             GLib.source_remove(this._syncTimer);
@@ -1076,24 +1084,37 @@ export class MusicMenuApp {
         const minutes = this._settings.get_int('sync-interval');
         if (!minutes)
             return;
-        const intervalMs = minutes * 60 * 1000;
+        const interval = minutes * 60;
         const last = Date.parse(this._settings.get_string('last-sync') || '');
-        const overdue = !last || Date.now() - last >= intervalMs;
-        if (overdue)
-            this._runSync();
-        this._syncTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, minutes * 60, () => {
-            this._runSync();
-            return GLib.SOURCE_CONTINUE;
-        });
+        const overdue = !last || Date.now() - last >= interval * 1000;
+        this._syncTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT,
+            overdue ? SYNC_GRACE_SECONDS : interval, () => {
+                this._runSync({quiet: true});
+                this._syncTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
+                    this._runSync({quiet: true});
+                    return GLib.SOURCE_CONTINUE;
+                });
+                return GLib.SOURCE_REMOVE;
+            });
     }
 
-    async _runSync() {
-        try {
-            await amctl.run(['sync']);
-            this._settings.set_string('last-sync', new Date().toISOString());
-        } catch (e) {
-            console.warn(`[Music Menu] Automatic sync failed: ${e.message}`);
+    // One sync at a time, wherever it was asked for — the timer, a header's
+    // sync button — and one promise for everyone asking. am.py records
+    // 'last-sync' itself; it is set here too so the schedule holds even where
+    // the backend cannot reach the settings. A failure is only said when
+    // someone pressed for it: a timer's is a log line.
+    _runSync({quiet = false} = {}) {
+        if (!this._syncing) {
+            this._syncing = amctl.run(['sync'])
+                .then(() => this._settings.set_string('last-sync', new Date().toISOString()))
+                .finally(() => (this._syncing = null));
         }
+        return this._syncing.catch(e => {
+            if (quiet)
+                console.warn(`[Music Menu] Automatic sync failed: ${e.message}`);
+            else
+                notifyFailure(e, 'sync');
+        });
     }
 
     // Started headlessly the moment the library is opened, so it is ready by
@@ -1181,6 +1202,7 @@ export class MusicMenuApp {
                 button: this._button,
                 onSwitch: key => (this._sectionKey = key),
                 onOpenSettings: () => this._openSettings(),
+                onSync: () => this._runSync(),
                 footer: this._playerBar?.actor ?? null,
             });
             this._browser.enable();
@@ -1295,6 +1317,7 @@ export class MusicMenuApp {
             onBack: () => this._goBack(),
             end: [settings, close],
             onOpenSettings: () => this._openSettings(),
+            onSync: () => this._runSync(),
         });
         this._library.setFooter(this._playerBar?.actor ?? null);
         // Sized outright: a clone lays a hidden source out at the size it asks

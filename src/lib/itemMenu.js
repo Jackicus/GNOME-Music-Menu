@@ -9,7 +9,7 @@
 //
 // Every action is a fire-and-forget `amctl.run()`: the menu doesn't wait
 // around for Apple Music to answer, it just tells the user when the engine
-// says no.
+// says no (notify.js).
 
 import St from 'gi://St';
 
@@ -17,29 +17,13 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
 
-import {run, AmError} from './amctl.js';
+import {run} from './amctl.js';
+import {notifyFailure} from './notify.js';
 
 // A library id is the sync'd id of an album (l.), playlist (p.) or library
 // song/track (i.); anything else is a bare catalog id, not yet in the
 // library.
 const LIBRARY_ID = /^[lpi]\./;
-
-function friendlyMessage(e) {
-    if (e instanceof AmError) {
-        if (e.code === 'not-signed-in')
-            return "Sign in to Apple Music in Music Menu's settings";
-        if (e.code === 'engine-down')
-            return "Apple Music isn't running right now";
-        if (e.message)
-            return e.message;
-    }
-    return 'Something went wrong talking to Apple Music';
-}
-
-function notifyFailure(e) {
-    console.warn(`[Music Menu] item menu action failed: ${e?.code ?? e}`);
-    Main.notify('Music Menu', friendlyMessage(e));
-}
 
 // The group (and the track's place in it) that `am.py play --start-with`
 // needs to play a track in context, found by matching the track's own id

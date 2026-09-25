@@ -13,6 +13,7 @@ import {fillOnScroll} from './lazyList.js';
 import {createArtwork, createActionButton, createLabel, createRow} from './widgets.js';
 import {PANE_INSET, radiusStyle} from './shape.js';
 import {run} from './amctl.js';
+import {notifyFailure} from './notify.js';
 import {adjustAnimationTime, ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
 // What the pane keeps around its content, per frame; the stylesheet carries
@@ -337,7 +338,7 @@ export class DetailView {
                 ...(styleClass ? {styleClass} : {}),
             });
             button.set_x_expand(true);
-            button.connect('clicked', () => run(['play', item.play.kind, item.play.id, ...extra]).catch(() => {}));
+            button.connect('clicked', () => run(['play', item.play.kind, item.play.id, ...extra]).catch(notifyFailure));
             return button;
         };
 
@@ -351,7 +352,7 @@ export class DetailView {
         actions.add_child(play('Play', []));
         const shuffle = createActionButton({label: 'Shuffle', icon: 'media-playlist-shuffle-symbolic', styleClass: 'button mm-action-secondary'});
         shuffle.set_x_expand(true);
-        shuffle.connect('clicked', () => run(['play', item.play.kind, item.play.id, '--shuffle']).catch(() => {}));
+        shuffle.connect('clicked', () => run(['play', item.play.kind, item.play.id, '--shuffle']).catch(notifyFailure));
         actions.add_child(shuffle);
         side.add_child(actions);
 
@@ -480,7 +481,7 @@ export class DetailView {
                     explicit: entry.explicit,
                     duration: entry.durationLabel,
                     nowPlaying: key != null && key === this._nowPlayingKey,
-                    onActivate: () => run(['play', group.play.kind, group.play.id, '--start-with', String(entry.index)]).catch(() => {}),
+                    onActivate: () => run(['play', group.play.kind, group.play.id, '--start-with', String(entry.index)]).catch(notifyFailure),
                     onMenu: sourceActor => this._onMenu?.({item, track: entry, sourceActor}),
                 });
                 if (key != null) {

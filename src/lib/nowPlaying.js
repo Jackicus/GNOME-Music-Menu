@@ -1,7 +1,10 @@
 // The full now-playing view: big art, title, artist and album, the shared
 // transport and scrubber (playerWidgets.js), and two tabs — time-synced
 // Lyrics and the Up Next queue — each fetched from am.py when it is wanted
-// rather than kept warm, since a view that is not open is not worth polling.
+// rather than kept warm. The view is built once and kept (app.js), so it is
+// mostly off screen: while unmapped it follows the track's name and art,
+// which cost nothing, and leaves the lyrics, the queue and the scrolling
+// until it is next shown.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -11,6 +14,7 @@ import Gio from 'gi://Gio';
 import {ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
 import * as amctl from './amctl.js';
+import {notifyFailure} from './notify.js';
 import {createLabel} from './widgets.js';
 import {findLyricIndex} from './playerUtil.js';
 import {Transport, createRemoteArt} from './playerWidgets.js';
@@ -100,6 +104,10 @@ export class NowPlayingView {
             'changed', () => this._render(),
             'position', (_player, positionUs) => this._highlightLine(positionUs),
             this);
+        this.actor.connect('notify::mapped', () => {
+            if (this.actor.mapped)
+                this._render();
+        });
         this._render();
     }
 
@@ -109,10 +117,14 @@ export class NowPlayingView {
         this._artist.text = track?.artist ?? '';
         this._album.text = track?.album ?? '';
         this._art.setUrl(track?.artUrl ?? null);
+        if (!this.actor.mapped)
+            return;
 
         const key = trackKey(track);
         if (key !== this._lyricsKey)
             this._fetchLyrics(track);
+        else
+            this._highlightLine(this._player.state.positionUs);
         if (this._tab === 'queue' && key !== this._queueKey)
             this._fetchQueue();
     }
@@ -146,7 +158,7 @@ export class NowPlayingView {
         let lines = [];
         if (track?.catalogId) {
             try {
-                const res = await amctl.run(['lyrics', track.catalogId], {cancellable: this._cancellable});
+                const res = await amctl.run(['--no-start', 'lyrics', track.catalogId], {cancellable: this._cancellable});
                 lines = Array.isArray(res.lines) ? res.lines : [];
             } catch {
                 // No lyrics for this one, or the engine is down: the empty state.
@@ -175,7 +187,7 @@ export class NowPlayingView {
     }
 
     _highlightLine(positionUs) {
-        if (!this._lines.length)
+        if (!this._lines.length || !this.actor.mapped)
             return;
         const index = findLyricIndex(this._lines, positionUs / 1000);
         if (index === this._lineIndex)
@@ -202,7 +214,7 @@ export class NowPlayingView {
         let items = [];
         let index = -1;
         try {
-            const res = await amctl.run(['queue'], {cancellable: this._cancellable});
+            const res = await amctl.run(['--no-start', 'queue'], {cancellable: this._cancellable});
             items = Array.isArray(res.items) ? res.items : [];
             index = typeof res.index === 'number' ? res.index : -1;
         } catch {
@@ -231,7 +243,7 @@ export class NowPlayingView {
                 content.add_child(new St.Label({text: item.durationLabel, style_class: 'mm-queue-item-duration', y_align: Clutter.ActorAlign.CENTER}));
             row.set_child(content);
             if (item.id)
-                row.connect('clicked', () => amctl.fire(['play', 'song', item.id]));
+                row.connect('clicked', () => amctl.run(['play', 'song', item.id]).catch(notifyFailure));
             this._queueList.add_child(row);
         });
     }

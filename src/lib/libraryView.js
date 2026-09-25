@@ -23,7 +23,6 @@ import {ensureStyleDeep} from './anim.js';
 import {createMediaView} from './mediaGrid.js';
 import {ShelfView} from './shelfView.js';
 import {createEmptyState, createHeader, createIconButton} from './widgets.js';
-import * as amctl from './amctl.js';
 
 // `.mm-header`'s height (52px) plus its margin-bottom (24px) in stylesheet.css
 // — keep in step — taken off the top before anything under it is sized.
@@ -37,8 +36,9 @@ export class LibraryView {
     // open on the same one next time; `onBack` and `end` go to the header
     // (createHeader), and `onOpenSettings` is the empty state's way out.
     // `onContextMenu` is a tile's secondary click or Menu key, in a grid and
-    // in a shelf alike.
-    constructor({sections, itemsFor, active, width, height, columns, rows, onActivate, onContextMenu, onSwitch, onBack, end, onOpenSettings}) {
+    // in a shelf alike. `onSync` runs a sync and answers with its promise;
+    // the header's sync button is held down until that settles.
+    constructor({sections, itemsFor, active, width, height, columns, rows, onActivate, onContextMenu, onSwitch, onBack, end, onOpenSettings, onSync = null}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._width = width;
@@ -60,7 +60,6 @@ export class LibraryView {
         this._footer = null;
         this._footerHeight = 0;
         this._footerRecheckId = 0;
-        this._syncing = false;
 
         this.actor = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -71,7 +70,7 @@ export class LibraryView {
         // A library's own way to ask for a fresh library.json without
         // waiting for the automatic timer (app.js) or the preferences.
         this._syncButton = createIconButton('view-refresh-symbolic', {accessibleName: 'Sync library'});
-        this._syncButton.connect('clicked', () => this._sync());
+        this._syncButton.connect('clicked', () => this._sync(onSync));
 
         this.header = createHeader({
             sections,
@@ -216,20 +215,17 @@ export class LibraryView {
         return this._sections.find(s => s.key === key) ?? this._sections[0] ?? null;
     }
 
-    // A fresh library.json without waiting for the automatic timer.
-    _sync() {
-        if (this._syncing)
+    // The button is held down while the sync it asked for runs.
+    _sync(onSync) {
+        const pending = onSync?.();
+        if (!pending || !this._syncButton.reactive)
             return;
-        this._syncing = true;
         this._syncButton.reactive = false;
         this._syncButton.opacity = 128;
-        amctl.run(['sync'])
-            .catch(e => console.warn(`[Music Menu] Sync failed: ${e.message}`))
-            .finally(() => {
-                this._syncing = false;
-                this._syncButton.reactive = true;
-                this._syncButton.opacity = 255;
-            });
+        pending.finally(() => {
+            this._syncButton.reactive = true;
+            this._syncButton.opacity = 255;
+        });
     }
 
     _page(key) {

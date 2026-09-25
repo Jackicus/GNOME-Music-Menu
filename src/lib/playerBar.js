@@ -4,7 +4,8 @@
 // through to Now Playing, and the shared transport and scrubber
 // (playerWidgets.js) in the middle. With no track it shrinks
 // (`mm-player-bar-compact`) to a "Not Playing" line — or a Start button when
-// the engine itself is down, which is polled for while nothing plays.
+// the engine itself is down, which is polled for while nothing plays and the
+// bar is actually on screen: a bar in a library that is put away asks nothing.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -14,9 +15,10 @@ import * as amctl from './amctl.js';
 import {createLabel} from './widgets.js';
 import {Transport, createRemoteArt} from './playerWidgets.js';
 
-// How often to ask `engine status` while nothing is playing, to notice the
-// engine coming up (or going down) without the user touching anything.
-const ENGINE_POLL_MS = 8000;
+// How often to ask `engine status` while nothing is playing and the bar is
+// showing, to notice the engine coming up (or going down) without the user
+// touching anything. Each ask is a short-lived process, so not often.
+const ENGINE_POLL_MS = 15000;
 
 export class PlayerBar {
     constructor({player, onOpenNowPlaying}) {
@@ -80,6 +82,7 @@ export class PlayerBar {
         this.actor.add_child(this._transport.actor);
 
         player.connectObject('changed', () => this._render(), this);
+        this.actor.connect('notify::mapped', () => this._syncEnginePoll());
         this._render();
     }
 
@@ -89,7 +92,6 @@ export class PlayerBar {
         this._transport.actor.visible = !!track;
         if (track) {
             this.actor.remove_style_class_name('mm-player-bar-compact');
-            this._stopEnginePoll();
             this._empty.hide();
             this._start.hide();
             this._title.text = track.title;
@@ -98,8 +100,17 @@ export class PlayerBar {
         } else {
             this.actor.add_style_class_name('mm-player-bar-compact');
             this._showEngineState();
-            this._startEnginePoll();
         }
+        this._syncEnginePoll();
+    }
+
+    // Polled only while there is something to find out and someone to show
+    // it to: no track, and the bar mapped.
+    _syncEnginePoll() {
+        if (this.actor.mapped && !this._player.state.track)
+            this._startEnginePoll();
+        else
+            this._stopEnginePoll();
     }
 
     _showEngineState() {

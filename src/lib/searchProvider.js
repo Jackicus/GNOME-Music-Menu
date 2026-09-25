@@ -24,16 +24,16 @@
 //
 // `lookup_app()` returns null for any id that names no installed app, and
 // `app.state` on that null throws straight out of the button's `clicked`
-// handler — GNOME 50 does not guard this the way older shells' comments
-// (and this file's own, previously) assumed. There is no hook a provider can
+// handler — GNOME 50 does not guard this. There is no hook a provider can
 // use to make `animateLaunch()` skip itself, short of leaving `appInfo` off
-// entirely (and losing the heading), so `get_id()` instead names an app that
-// is always installed wherever this extension can run at all: Chrome, which
-// `am.py`'s own engine already requires (`google-chrome-stable` et al. in
-// `engine_start()`). `google-chrome.desktop` always resolves to a real
-// `Shell.App`, so `app.state` reads fine and the click just does nothing
-// (Chrome is presumably already STOPPED as far as the shell's tracked apps
-// go, or if RUNNING, nothing animates) — never the crash.
+// entirely (and losing the heading), so `get_id()` names a desktop file the
+// shell itself ships wherever it runs: `org.gnome.Shell.Extensions.desktop`
+// (the hidden launcher for an extension's preferences). It always resolves,
+// so the click animates nothing and throws nothing.
+//
+// The engine is never started for a search: typing in the overview must not
+// launch Chrome. Apple Music answers once it is running — the library's
+// button starts it — and stays quiet otherwise.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -42,6 +42,7 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {run} from './amctl.js';
+import {notifyFailure} from './notify.js';
 import {cacheRemoteArt} from './playerUtil.js';
 
 const MIN_CHARS = 3;
@@ -49,7 +50,8 @@ const RESULT_LIMIT = 12;
 const DEBOUNCE_MS = 250;
 
 export class MusicSearchProvider {
-    constructor({onActivate}) {
+    // `gicon` is the library's own icon, for the heading over the results.
+    constructor({onActivate, gicon}) {
         this._onActivate = onActivate;
         this.id = 'apple-music';
         this.isRemoteProvider = false;
@@ -58,11 +60,11 @@ export class MusicSearchProvider {
         this.canLaunchSearch = true;
         this.appInfo = {
             get_name: () => 'Apple Music',
-            get_icon: () => Gio.ThemedIcon.new('audio-x-generic-symbolic'),
+            get_icon: () => gicon ?? Gio.ThemedIcon.new('audio-x-generic-symbolic'),
             // See the file header: this has to be an id `Shell.AppSystem`
             // can actually resolve, or the provider heading's own click
             // handler throws.
-            get_id: () => 'google-chrome.desktop',
+            get_id: () => 'org.gnome.Shell.Extensions.desktop',
             // Read by ParentalControlsManager.shouldShowApp() before this
             // provider is even registered; true is "don't hide me".
             should_show: () => true,
@@ -114,7 +116,7 @@ export class MusicSearchProvider {
                     resolve([]);
                     return GLib.SOURCE_REMOVE;
                 }
-                run(['search', query, '--limit', String(RESULT_LIMIT)], {cancellable})
+                run(['--no-start', 'search', query, '--limit', String(RESULT_LIMIT)], {cancellable})
                     .then(({items = []}) => {
                         const ids = [];
                         for (const item of items) {
@@ -229,7 +231,7 @@ export class MusicSearchProvider {
         if (!item)
             return;
         if (item.kind === 'song')
-            run(['play', 'song', id]).catch(() => {});
+            run(['play', 'song', id]).catch(notifyFailure);
         else
             this._onActivate(item);
     }

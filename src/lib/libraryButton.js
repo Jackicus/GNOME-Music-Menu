@@ -89,6 +89,12 @@ export class LibraryButton {
         this._detach();
     }
 
+    // The library's icon itself, for whatever else stands for the library —
+    // the heading over its search results.
+    get gicon() {
+        return this._gicon;
+    }
+
     // The button's icon, for a panel that wants to zoom out of it — or null
     // while it is not on screen (the dash is the overview's, and a shortcut
     // can be pressed on the desktop), which leaves nothing to zoom out of.

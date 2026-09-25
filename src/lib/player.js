@@ -14,9 +14,11 @@
 // so the position is reckoned off the monotonic clock between corrections: a
 // pause, a seek, a track change, and a read of Position at each. Chrome's
 // MPRIS has no Shuffle or LoopStatus, so those, the catalog id and Apple's
-// own cover art come from am.py's `now-playing` — once per track change and
-// every ten seconds while playing — and shuffle and repeat are set through
-// am.py alone.
+// own cover art come from am.py's `now-playing` — once per track change, and
+// every half minute while playing, when the reckoned position is checked
+// against the player's own too — and shuffle and repeat are set through
+// am.py alone. The poll never starts an engine: a player on the bus means
+// one is running.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -50,7 +52,10 @@ const PlayerProxy = Gio.DBusProxy.makeProxyWrapper(`<node>
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_PATH = '/org/mpris/MediaPlayer2';
 const NO_TRACK = '/org/mpris/MediaPlayer2/TrackList/NoTrack';
-const POLL_INTERVAL_US = 10 * 1000 * 1000;
+const POLL_INTERVAL_US = 30 * 1000 * 1000;
+// The reckoned position is left alone unless the poll finds it this far out:
+// the poll's own answer is a spawn and a round trip old.
+const DRIFT_US = 2 * 1000 * 1000;
 
 // am.py and MPRIS name the modes differently; one vocabulary here.
 const REPEAT = {none: 'none', off: 'none', one: 'one', track: 'one', all: 'all', playlist: 'all'};
@@ -288,7 +293,7 @@ export class Player extends Signals.EventEmitter {
         this._polling = true;
         this._polledAt = GLib.get_monotonic_time();
         try {
-            const res = await amctl.run(['now-playing'], {cancellable: this._cancellable});
+            const res = await amctl.run(['--no-start', 'now-playing'], {cancellable: this._cancellable});
             if (!this._destroyed)
                 this._applyNowPlaying(res);
         } catch {
@@ -305,6 +310,15 @@ export class Player extends Signals.EventEmitter {
             for (const field of ['id', 'catalogId', 'artUrl']) {
                 if (track[field] && this._track[field] !== track[field]) {
                     this._track[field] = track[field];
+                    changed = true;
+                }
+            }
+            // The clock and the player drift apart over a long track; the
+            // poll is the one reading of the player's own position there is.
+            if (res.state === 'playing' && this._status === 'Playing') {
+                const positionUs = Math.round((Number(res.position) || 0) * 1e6);
+                if (Math.abs(positionUs - this._position()) > DRIFT_US) {
+                    this._correct(positionUs);
                     changed = true;
                 }
             }
