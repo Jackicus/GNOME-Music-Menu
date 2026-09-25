@@ -12,13 +12,28 @@
 // `get_name()` and `get_icon()`; without one it gets a bare `GridSearchResults`
 // the way the built-in app search does). One caveat that comes with it: that
 // header is itself a button, and clicking it calls the shell's own
-// `ProviderInfo.animateLaunch()`, which looks our `appInfo.get_id()` up in
-// `Shell.AppSystem` — an id that names no installed app, since this isn't
-// one. On stock GNOME 50 that lookup returns null and the click logs a
-// harmless JS error to the journal instead of animating; it does not throw
-// past the signal handler or affect the shell otherwise. There is no hook a
-// provider can use to avoid it, short of leaving `appInfo` off (and losing
-// the heading), so it's left as a known rough edge.
+// `ProviderInfo.animateLaunch()` (extracted from GNOME 50's own
+// libshell-*.so with objcopy + `Gio.Resource.load()` to check):
+//
+//     animateLaunch() {
+//         const appSys = Shell.AppSystem.get_default();
+//         const app = appSys.lookup_app(this.provider.appInfo.get_id());
+//         if (app.state === Shell.AppState.STOPPED)
+//             IconGrid.zoomOutActor(this._content);
+//     }
+//
+// `lookup_app()` returns null for any id that names no installed app, and
+// `app.state` on that null throws straight out of the button's `clicked`
+// handler — GNOME 50 does not guard this the way older shells' comments
+// (and this file's own, previously) assumed. There is no hook a provider can
+// use to make `animateLaunch()` skip itself, short of leaving `appInfo` off
+// entirely (and losing the heading), so `get_id()` instead names an app that
+// is always installed wherever this extension can run at all: Chrome, which
+// `am.py`'s own engine already requires (`google-chrome-stable` et al. in
+// `engine_start()`). `google-chrome.desktop` always resolves to a real
+// `Shell.App`, so `app.state` reads fine and the click just does nothing
+// (Chrome is presumably already STOPPED as far as the shell's tracked apps
+// go, or if RUNNING, nothing animates) — never the crash.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -32,6 +47,13 @@ const MIN_CHARS = 3;
 const RESULT_LIMIT = 12;
 const DEBOUNCE_MS = 250;
 
+// Where a search result's remote catalog artwork (a plain https URL — the
+// only art a fresh, unsynced catalog hit carries; see `_createIcon` below)
+// is cached once fetched, so the same row does not refetch on every
+// keystroke and repeat searches show the icon immediately.
+const SEARCH_ART_CACHE_DIR = GLib.build_filenamev(
+    [GLib.get_home_dir(), '.cache', 'music-menu', 'search-art']);
+
 export class MusicSearchProvider {
     constructor({onActivate}) {
         this._onActivate = onActivate;
@@ -43,7 +65,10 @@ export class MusicSearchProvider {
         this.appInfo = {
             get_name: () => 'Apple Music',
             get_icon: () => Gio.ThemedIcon.new('audio-x-generic-symbolic'),
-            get_id: () => 'music-menu-search-provider',
+            // See the file header: this has to be an id `Shell.AppSystem`
+            // can actually resolve, or the provider heading's own click
+            // handler throws.
+            get_id: () => 'google-chrome.desktop',
             // Read by ParentalControlsManager.shouldShowApp() before this
             // provider is even registered; true is "don't hide me".
             should_show: () => true,
@@ -139,17 +164,97 @@ export class MusicSearchProvider {
         return Promise.resolve(metas);
     }
 
+    // A result's own icon, never blank and never blocking. `item.art` is
+    // whatever `am.py search`'s normalizer put there:
+    //  - a local path, if the hit is already in the synced library (or
+    //    happens to share a synced item's artwork) — the file it names
+    //    genuinely exists, so it can be used straight away;
+    //  - a local path `sync.py` only *computed* (the cache location an
+    //    eventual download would land at) for a catalog hit that has never
+    //    been synced — the file it names does not exist yet, because
+    //    `handle_search()` never downloads it, only `handle_sync()` does;
+    //  - null, if the raw result carried no artwork at all;
+    //  - (defensively) a plain https URL, should a future `am.py` ever pass
+    //    the catalog artwork URL itself through instead of a precomputed
+    //    cache path.
+    // A symbolic icon shows immediately in every case; a real one — local or
+    // freshly fetched — replaces it in place once it is known to exist.
     _createIcon(item, size) {
-        if (item.art) {
-            return new St.Icon({
-                gicon: Gio.FileIcon.new(Gio.File.new_for_path(item.art)),
-                icon_size: size,
+        const iconName = item.kind === 'artist' ? 'avatar-default-symbolic'
+            : item.kind === 'album' ? 'media-optical-cd-audio-symbolic'
+                : 'audio-x-generic-symbolic';
+        const icon = new St.Icon({icon_name: iconName, icon_size: size});
+
+        // Results are rebuilt on every keystroke, so an async load landing
+        // after this row is gone must not touch the icon — there is no
+        // `destroyed` property on a Clutter actor, so it is tracked by hand
+        // (the same pattern `playerBar.js`/`player.js` use).
+        let destroyed = false;
+        icon.connect('destroy', () => (destroyed = true));
+
+        const art = item.art;
+        if (!art)
+            return icon;
+
+        if (art.startsWith('https://') || art.startsWith('http://'))
+            this._loadRemoteArt(art, icon, () => destroyed);
+        else
+            this._loadLocalArt(art, icon, () => destroyed);
+
+        return icon;
+    }
+
+    // `icon` already shows the symbolic fallback; this only ever upgrades it
+    // (or silently leaves it be, e.g. on a missing file or a row that is
+    // gone by the time the check finishes).
+    _loadLocalArt(path, icon, isDestroyed) {
+        const file = Gio.File.new_for_path(path);
+        file.query_info_async('standard::type', Gio.FileQueryInfoFlags.NONE,
+            GLib.PRIORITY_DEFAULT, null, (source, res) => {
+                try {
+                    source.query_info_finish(res);
+                } catch {
+                    return; // never downloaded — keep the symbolic fallback
+                }
+                if (!isDestroyed())
+                    icon.gicon = Gio.FileIcon.new(file);
             });
+    }
+
+    _loadRemoteArt(url, icon, isDestroyed) {
+        try {
+            GLib.mkdir_with_parents(SEARCH_ART_CACHE_DIR, 0o700);
+        } catch {
+            return;
         }
-        const iconName = item.kind === 'artist'
-            ? 'avatar-default-symbolic'
-            : 'audio-x-generic-symbolic';
-        return new St.Icon({icon_name: iconName, icon_size: size});
+        const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, url, -1);
+        const dest = Gio.File.new_for_path(
+            GLib.build_filenamev([SEARCH_ART_CACHE_DIR, `${hash}.jpg`]));
+
+        if (dest.query_exists(null)) {
+            if (!isDestroyed())
+                icon.gicon = Gio.FileIcon.new(dest);
+            return;
+        }
+
+        Gio.File.new_for_uri(url).load_bytes_async(null, (source, res) => {
+            let bytes;
+            try {
+                [bytes] = source.load_bytes_finish(res);
+            } catch {
+                return; // offline, 404, cancelled — keep the symbolic fallback
+            }
+            dest.replace_contents_bytes_async(bytes, null, false,
+                Gio.FileCreateFlags.REPLACE_DESTINATION, null, (destFile, res2) => {
+                    try {
+                        destFile.replace_contents_finish(res2);
+                    } catch {
+                        return;
+                    }
+                    if (!isDestroyed())
+                        icon.gicon = Gio.FileIcon.new(destFile);
+                });
+        });
     }
 
     activateResult(id) {

@@ -112,24 +112,41 @@ def draw_cover(out_path, title, subtitle, badge, palette, motif, is_artist=False
 
     # 2. Geometric motif
     if is_artist:
-        # Distinctive artist portrait framing
-        ctx.arc(256, 185, 115, 0, 2 * math.pi)
-        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.25)
+        # The artist tile crops this square art into the circle inscribed in
+        # it (shape.js's `round` part: border-radius 9999px on a square box,
+        # i.e. a circle of radius 256 centred on the image). Nothing that
+        # matters — silhouette or text — may sit outside that circle, so the
+        # whole portrait is clipped to a slightly smaller, safe circle and no
+        # text is drawn here at all: the shelf/detail views already print the
+        # artist's name as their own label below the round artwork.
+        cx, cy, safe_r = 256, 256, 236
+
+        ctx.save()
+        ctx.arc(cx, cy, safe_r, 0, 2 * math.pi)
+        ctx.clip()
+
+        # Soft disc behind the silhouette
+        ctx.arc(cx, cy, safe_r, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.22)
         ctx.fill()
 
         ctx.set_line_width(3.0)
-        ctx.arc(256, 185, 125, 0, 2 * math.pi)
+        ctx.arc(cx, cy, safe_r - 8, 0, 2 * math.pi)
         ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.8)
         ctx.stroke()
 
-        # Inner stylized silhouette
-        ctx.arc(256, 160, 45, 0, 2 * math.pi)
-        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.9)
+        # Centred head-and-shoulders silhouette, sized to stay inside safe_r
+        # even after the clip (the clip is the real guarantee; this keeps the
+        # unclipped shape close to it so nothing looks abruptly cut off).
+        ctx.arc(cx, cy - 55, 62, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.95)
         ctx.fill()
 
-        ctx.arc(256, 260, 75, math.pi, 2 * math.pi)
-        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.75)
+        ctx.arc(cx, cy + 210, 150, math.pi, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.85)
         ctx.fill()
+
+        ctx.restore()
 
     elif motif == "sun_horizon":
         # Sun disc
@@ -253,59 +270,65 @@ def draw_cover(out_path, title, subtitle, badge, palette, motif, is_artist=False
         ctx.set_source_rgba(mid_rgb[0], mid_rgb[1], mid_rgb[2], 0.65)
         ctx.fill()
 
-    # 3. Readability scrim across bottom area
-    scrim = cairo.LinearGradient(0, 250, 0, 512)
-    scrim.add_color_stop_rgba(0.0, 0, 0, 0, 0.0)
-    scrim.add_color_stop_rgba(0.4, 0, 0, 0, 0.45)
-    scrim.add_color_stop_rgba(1.0, 0, 0, 0, 0.88)
-    ctx.set_source(scrim)
-    ctx.rectangle(0, 250, 512, 262)
-    ctx.fill()
-
-    # 4. Typography
-    ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-
-    # Compute optimal font size for title
-    title_upper = title.upper()
-    font_size = 32
-    lines = wrap_text(ctx, title_upper, 440, font_size)
-    if len(lines) > 2:
-        font_size = 26
-        lines = wrap_text(ctx, title_upper, 440, font_size)
-
-    line_step = round(font_size * 1.15)
-    y_start = 450 - (len(lines) - 1) * line_step - (28 if subtitle else 0)
-
-    # Draw title
-    ctx.set_font_size(font_size)
-    ctx.set_source_rgba(1.0, 1.0, 1.0, 0.98)
-    for idx, line in enumerate(lines):
-        ctx.move_to(36, y_start + idx * line_step)
-        ctx.show_text(line)
-
-    # Draw subtitle / artist
-    if subtitle:
-        sub_y = y_start + len(lines) * line_step + 4
-        ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
-        ctx.set_font_size(20)
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.78)
-        ctx.move_to(36, sub_y)
-        ctx.show_text(subtitle)
-
-    # Draw badge / year in upper right
-    if badge:
-        ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        ctx.set_font_size(14)
-        ext = ctx.text_extents(badge)
-        bx = 512 - 36 - ext.width - 16
-        by = 36
-        ctx.rectangle(bx, by, ext.width + 16, 26)
-        ctx.set_source_rgba(0, 0, 0, 0.45)
+    # 3. Readability scrim + 4. Typography: skipped for artist portraits. That
+    # text (title near the bottom-left corner, the badge near the top-right
+    # one) sits well outside the inscribed circle the artist tile crops this
+    # image to, so it would just be clipped away; the shelf/detail views
+    # already show the artist's name as their own label under the artwork.
+    if not is_artist:
+        # 3. Readability scrim across bottom area
+        scrim = cairo.LinearGradient(0, 250, 0, 512)
+        scrim.add_color_stop_rgba(0.0, 0, 0, 0, 0.0)
+        scrim.add_color_stop_rgba(0.4, 0, 0, 0, 0.45)
+        scrim.add_color_stop_rgba(1.0, 0, 0, 0, 0.88)
+        ctx.set_source(scrim)
+        ctx.rectangle(0, 250, 512, 262)
         ctx.fill()
 
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85)
-        ctx.move_to(bx + 8, by + 18)
-        ctx.show_text(badge)
+        # 4. Typography
+        ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+
+        # Compute optimal font size for title
+        title_upper = title.upper()
+        font_size = 32
+        lines = wrap_text(ctx, title_upper, 440, font_size)
+        if len(lines) > 2:
+            font_size = 26
+            lines = wrap_text(ctx, title_upper, 440, font_size)
+
+        line_step = round(font_size * 1.15)
+        y_start = 450 - (len(lines) - 1) * line_step - (28 if subtitle else 0)
+
+        # Draw title
+        ctx.set_font_size(font_size)
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.98)
+        for idx, line in enumerate(lines):
+            ctx.move_to(36, y_start + idx * line_step)
+            ctx.show_text(line)
+
+        # Draw subtitle / artist
+        if subtitle:
+            sub_y = y_start + len(lines) * line_step + 4
+            ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+            ctx.set_font_size(20)
+            ctx.set_source_rgba(1.0, 1.0, 1.0, 0.78)
+            ctx.move_to(36, sub_y)
+            ctx.show_text(subtitle)
+
+        # Draw badge / year in upper right
+        if badge:
+            ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            ctx.set_font_size(14)
+            ext = ctx.text_extents(badge)
+            bx = 512 - 36 - ext.width - 16
+            by = 36
+            ctx.rectangle(bx, by, ext.width + 16, 26)
+            ctx.set_source_rgba(0, 0, 0, 0.45)
+            ctx.fill()
+
+            ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85)
+            ctx.move_to(bx + 8, by + 18)
+            ctx.show_text(badge)
 
     # 5. Convert to JPEG via GdkPixbuf
     buf = io.BytesIO()
