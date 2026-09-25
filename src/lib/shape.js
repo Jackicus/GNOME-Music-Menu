@@ -31,6 +31,10 @@ const PART = {
     // panel's own (detailDialog.js sets the pair).
     paneInner: r => Math.max(0, r + 12 - PANE_INSET),
     badge: r => Math.round(r / 2),
+    // A full circle, for an artist tile — Apple Music's own round lockup.
+    // Independent of `corner-radius`, exactly as a pill is: a circle stays a
+    // circle whatever the setting says about square corners.
+    round: () => 9999,
 };
 
 // The declarations are built once per radius rather than once per surface: a

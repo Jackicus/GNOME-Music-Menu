@@ -23,7 +23,7 @@ import * as IconGrid from 'resource:///org/gnome/shell/ui/iconGrid.js';
 
 import {staggerIn} from './anim.js';
 import {handleBoundKey} from './controls.js';
-import {createArtwork} from './widgets.js';
+import {createArtwork, createLabel} from './widgets.js';
 
 // Not exported by the shell, but it is what AppDisplay extends.
 const BaseAppView = Object.getPrototypeOf(AppDisplay.AppDisplay);
@@ -215,8 +215,26 @@ class MusicMenuMediaGrid extends AppDisplay.AppGrid {
 
 // A BaseIcon is a square bin: it asks for the larger of its child's width and
 // height both ways. This one asks for what its child does, as a plain bin.
+// BaseIcon itself only ever builds one label, the title beneath the
+// artwork — there is no shell shape for a two-line tile — so the artist goes
+// into a second label of our own, added to the same box BaseIcon built its
+// title into. Passing no subtitle (an artist tile has none to add — its
+// title already is the artist) leaves the tile exactly as BaseIcon made it.
 const PosterIcon = GObject.registerClass(
 class MusicMenuPosterIcon extends IconGrid.BaseIcon {
+    _init(label, subtitle, params) {
+        super._init(label, params);
+        if (subtitle && this.label) {
+            // Matches how BaseIcon styles its own title label: FILL width so
+            // long text has the whole tile to ellipsise across, the text
+            // itself centred within that.
+            const subtitleLabel = createLabel(subtitle, 'mm-tile-subtitle');
+            subtitleLabel.clutter_text.x_align = Clutter.ActorAlign.CENTER;
+            subtitleLabel.clutter_text.y_align = Clutter.ActorAlign.CENTER;
+            this._box.add_child(subtitleLabel);
+        }
+    }
+
     vfunc_get_preferred_width(forHeight) {
         const node = this.get_theme_node();
         const [min, nat] = this.child.get_preferred_width(node.adjust_for_height(forHeight));
@@ -239,8 +257,10 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
         this.item = item;
         this.order = order;
 
-        // The icon's size is the height of its artwork.
-        this.icon = new PosterIcon(item.title, {
+        // The icon's size is the height of its artwork. Every section is
+        // square (aspect 1.0); `round` swaps the corner radius for a full
+        // circle, Apple Music's own artist lockup.
+        this.icon = new PosterIcon(item.title, item.subtitle, {
             setSizeManually: true,
             createIcon: size => createArtwork({
                 path: item.art,
@@ -248,6 +268,7 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
                 icon: section.icon,
                 width: Math.round(size / section.aspect),
                 height: size,
+                radius: section.round ? 'round' : 'art',
             }),
         });
         this.set_child(this.icon);

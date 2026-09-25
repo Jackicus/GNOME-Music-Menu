@@ -304,14 +304,17 @@ export function createPill(text, styleClass, style = null) {
     return new St.Label({text, style_class: styleClass, style, y_align: Clutter.ActorAlign.CENTER});
 }
 
-// One entry in a detail list: numbered circle, title/subtitle, badges, size and
-// a play glyph. Hover is a single background change on the row itself — nothing
-// inside it restyles, so one pointer crossing is one repaint rather than four.
-// `watched` is null for a row with nothing to track; true or false makes the
-// disc a toggle of its own, showing a tick once watched, and `onWatched` is
-// told each time it is flipped. Such a row also has `setWatched(watched)`,
-// for a mark made somewhere else — by playing the file — to show on it.
-export function createRow({index, title, subtitle, badges = [], size, onActivate, watched = null, onWatched}) {
+// One track row: a number that gives way to a play glyph on hover or focus
+// (or, once this is the track playing, to the same glyph in the accent
+// colour), the title with an "E" pill when explicit, the artist dimmed
+// underneath, a right-aligned duration and a `...` button that opens the
+// track's menu. Hover is a single background change on the row itself —
+// nothing inside it restyles on its own account, except the index glyph and
+// the playing state, which key off the row's own `:hover`, `:focus` and
+// `.mm-row-playing` entirely in the stylesheet, so nothing here polls either
+// by hand. Returns the row with `setNowPlaying(bool)` attached, for the
+// player to mark whichever row is currently playing.
+export function createRow({index, title, subtitle, explicit = false, duration, size, nowPlaying = false, onActivate, onMenu}) {
     const row = new St.Button({
         // The theme's flat button: hover, focus and pressed come with it, and
         // the inline radius below overrides the one it brings.
@@ -324,86 +327,67 @@ export function createRow({index, title, subtitle, badges = [], size, onActivate
     });
     const content = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
 
-    // A disc with the number centred in it. A label given the disc's size
-    // in CSS draws its text at the top, so the disc is a bin around it.
+    // The number and the play glyph sit on top of each other in the same
+    // bin; which one shows is the stylesheet's doing, not this function's.
     const number = new St.Label({
         text: String(index),
+        style_class: 'mm-row-number',
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
     });
-    if (watched === null) {
-        content.add_child(new St.Bin({
-            style_class: 'mm-row-index',
-            y_align: Clutter.ActorAlign.CENTER,
-            child: number,
-        }));
-    } else {
-        // A button inside the row's button: the press is the disc's alone,
-        // so ticking an episode off does not also play it.
-        const tick = new St.Icon({icon_name: 'object-select-symbolic', icon_size: 16});
-        const face = new St.Widget({layout_manager: new Clutter.BinLayout()});
-        face.add_child(number);
-        face.add_child(tick);
-        const disc = new St.Button({
-            style_class: 'mm-row-index mm-row-watch',
-            y_align: Clutter.ActorAlign.CENTER,
-            toggle_mode: true,
-            checked: watched,
-            reactive: true,
-            track_hover: true,
-            accessible_name: 'Watched',
-            child: face,
-        });
-        const sync = () => {
-            number.visible = !disc.checked;
-            tick.visible = disc.checked;
-        };
-        sync();
-        disc.connect('clicked', () => {
-            sync();
-            onWatched?.(disc.checked);
-        });
-        row.setWatched = value => {
-            disc.checked = value;
-            sync();
-        };
-        // The disc from the keyboard: it sits inside the row's button, and
-        // St's focus stops at the row, so a remote or a controller reaches it
-        // through the row that has the focus (controls.js, Mark watched).
-        row.toggleWatched = () => {
-            disc.checked = !disc.checked;
-            sync();
-            onWatched?.(disc.checked);
-        };
-        content.add_child(disc);
-    }
+    const playGlyph = new St.Icon({
+        icon_name: 'media-playback-start-symbolic',
+        icon_size: 14,
+        style_class: 'mm-row-play-icon',
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+    });
+    const face = new St.Widget({layout_manager: new Clutter.BinLayout()});
+    face.add_child(number);
+    face.add_child(playGlyph);
+    content.add_child(new St.Bin({
+        style_class: 'mm-row-index',
+        y_align: Clutter.ActorAlign.CENTER,
+        child: face,
+    }));
 
     const titleLabel = createLabel(title, 'mm-row-title', {x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+    const titleLine = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+    titleLine.add_child(titleLabel);
+    if (explicit)
+        titleLine.add_child(createPill('E', 'mm-badge', radiusStyle('badge')));
+
     if (subtitle) {
         const text = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'mm-row-text'});
-        text.add_child(titleLabel);
+        text.add_child(titleLine);
         text.add_child(createLabel(subtitle, 'mm-row-subtitle'));
         content.add_child(text);
     } else {
         // One line needs no column to stack in; it takes the column's margins.
-        titleLabel.add_style_class_name('mm-row-text');
-        content.add_child(titleLabel);
+        titleLine.add_style_class_name('mm-row-text');
+        content.add_child(titleLine);
     }
 
-    for (const badge of badges)
-        content.add_child(createPill(badge, 'mm-badge', radiusStyle('badge')));
     if (size)
         content.add_child(new St.Label({text: size, style_class: 'mm-row-size', y_align: Clutter.ActorAlign.CENTER}));
+    if (duration)
+        content.add_child(new St.Label({text: duration, style_class: 'mm-row-duration', y_align: Clutter.ActorAlign.CENTER}));
 
-    content.add_child(new St.Icon({
-        icon_name: 'media-playback-start-symbolic',
-        icon_size: 16,
-        style_class: 'mm-row-icon',
-        y_align: Clutter.ActorAlign.CENTER,
-    }));
+    // Its own St.Button inside the row's: a click on it is its own click and
+    // stops there, so opening the menu never also plays the track.
+    const menuButton = createIconButton('view-more-symbolic', {styleClass: 'icon-button mm-row-menu', accessibleName: 'More'});
+    menuButton.connect('clicked', () => onMenu?.(menuButton));
+    content.add_child(menuButton);
 
     row.set_child(content);
     row.connect('clicked', () => onActivate?.());
+    row.setNowPlaying = playing => {
+        if (playing)
+            row.add_style_class_name('mm-row-playing');
+        else
+            row.remove_style_class_name('mm-row-playing');
+    };
+    row.setNowPlaying(nowPlaying);
     return row;
 }
 
