@@ -10,6 +10,10 @@ Your Apple Music library as a menu in GNOME, beside Show Apps: Listen Now,
 Albums, Artists, Playlists and Radio, with a player bar and a full Now Playing
 view. No paid app, no developer account — it drives Apple's own web player.
 
+![The library in the overview: Listen Now's Heavy Rotation and Recently Added shelves of album tiles over the tabs, opened from the note button in the dash, with the player bar below](docs/screenshots/menu.jpg)
+
+<sub>Screenshot from the made-up demo library, not a real account.</sub>
+
 - **Listen Now.** A vertical list of shelves — Heavy Rotation, Recently
   Added, Recently Played, Made for You — each a horizontal row of tiles.
 - **Albums, Artists, Playlists, Radio.** Square covers, round artist lockups,
