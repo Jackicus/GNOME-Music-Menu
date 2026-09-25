@@ -71,12 +71,13 @@ export class Controls {
     // Home inside one, `onOpen` Home from a controller with nothing up;
     // `currentView` is the grid a page turn is for when the keyboard is not
     // on one of its tiles.
-    constructor(settings, {isActive, onHome, onOpen, currentView}) {
+    constructor(settings, {isActive, onHome, onOpen, currentView, onPlayPause}) {
         this._settings = settings;
         this._isActive = isActive;
         this._onHome = onHome;
         this._onOpen = onOpen;
         this._currentView = currentView;
+        this._onPlayPause = onPlayPause;
         this._keys = new Map();
         this._pad = new Map();
         this._device = null;
@@ -158,8 +159,8 @@ export class Controls {
         case 'page-next':
             this._turnPage(1);
             break;
-        case 'watched':
-            global.stage.get_key_focus()?.toggleWatched?.();
+        case 'play-pause':
+            this._onPlayPause?.();
             break;
         }
     }

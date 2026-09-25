@@ -23,7 +23,7 @@ export const ACTIONS = [
     {key: 'home', title: 'Home', subtitle: 'Opens the library, or closes it from wherever in it you are'},
     {key: 'page-previous', title: 'Previous page', subtitle: 'Turns a library back a page'},
     {key: 'page-next', title: 'Next page', subtitle: 'Turns a library on a page'},
-    {key: 'watched', title: 'Mark watched', subtitle: 'Ticks the highlighted episode or film on or off'},
+    {key: 'play-pause', title: 'Play / Pause', subtitle: 'Plays or pauses what is currently playing'},
 ];
 
 // The keys that already do these things in GNOME, and always will: a binding
