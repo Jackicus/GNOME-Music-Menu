@@ -65,6 +65,7 @@ export class LibraryView {
         // it takes off every page's budget.
         this._footer = null;
         this._footerHeight = 0;
+        this._footerRecheckId = 0;
         this._syncing = false;
 
         this.actor = new St.BoxLayout({
@@ -105,6 +106,9 @@ export class LibraryView {
             if (this._prebuildIdle)
                 GLib.source_remove(this._prebuildIdle);
             this._prebuildIdle = 0;
+            if (this._footerRecheckId)
+                GLib.source_remove(this._footerRecheckId);
+            this._footerRecheckId = 0;
             this._pages.clear();
         });
     }
@@ -169,10 +173,46 @@ export class LibraryView {
         this._footer = actor;
         if (actor)
             this.actor.add_child(actor);
-        // A freshly parented actor has no resolved style yet (anim.js), and
-        // its preferred height is exactly what a page's budget needs.
+        this._measureFooter();
+        this._scheduleFooterRecheck();
+    }
+
+    // Root cause of the grid's second row landing under the bar: both
+    // callers (app.js `_buildLibrary`, mediaMenu.js `_view`) build this view,
+    // wire the footer in through setFooter, and only *then* add `this.actor`
+    // to their own stack — the tree that actually carries it onto the real
+    // stage (app.js's background group, joined after `_buildLibrary`
+    // returns; mediaMenu.js's app-display slot, joined right after this
+    // call). So the first time this runs, `this.actor` — and the footer
+    // inside it — has no stage yet: `ensureStyleDeep` still walks the
+    // subtree, but a theme node can't resolve real margins, spacing or the
+    // footer's own CSS height against a stylesheet that isn't reachable from
+    // an unparented actor, so `get_preferred_height` comes back short (or
+    // zero) and the grid is handed too generous a budget. The stack doesn't
+    // clip (by design, so a hovered edge tile isn't cut off), so the extra
+    // row it packs in is not clipped either — it simply renders behind the
+    // bar. Re-measuring once more on the next idle, after the caller has
+    // finished attaching this view to the stage, catches the real number and
+    // rebuilds every page against it.
+    _scheduleFooterRecheck() {
+        if (this._footerRecheckId)
+            return;
+        this._footerRecheckId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._footerRecheckId = 0;
+            this._measureFooter();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _measureFooter() {
         ensureStyleDeep(this.actor);
-        this._footerHeight = actor ? Math.max(0, actor.get_preferred_height(-1)[1]) : 0;
+        const height = this._footer ? Math.max(0, this._footer.get_preferred_height(-1)[1]) : 0;
+        // Nothing to redo if the number didn't move and pages already exist
+        // against it — the common case once the recheck lands on a stable,
+        // already-styled tree.
+        if (height === this._footerHeight && this._pages.size)
+            return;
+        this._footerHeight = height;
         for (const page of this._pages.values())
             page.actor.destroy();
         this._pages.clear();
@@ -230,10 +270,14 @@ export class LibraryView {
                 onAction: this._onOpenSettings,
             });
         } else if (section.shelves) {
-            // Listen Now: a vertical scroll of horizontal shelves, not a grid.
+            // Listen Now: a vertical scroll of horizontal shelves, not a
+            // grid. Given the same page budget a grid gets (short of the
+            // footer already) so its ScrollView ends above the bar instead
+            // of filling the whole (unclipped) stack and running behind it.
             const shelf = new ShelfView({
                 shelves: items,
                 tileSize: Math.round(SHELF_TILE * scale),
+                height,
                 onActivate: (item, sourceActor) => this._onActivate?.(key, item, sourceActor),
                 onContextMenu: (item, sourceActor) => this._onContextMenu?.(item, sourceActor),
             });

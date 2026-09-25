@@ -251,6 +251,10 @@ class Shelf {
         this._buildInitial();
     }
 
+    get firstTile() {
+        return this._tiles[0] ?? null;
+    }
+
     // A screenful now, the rest a few at a time on idle (module doc above).
     _buildInitial() {
         const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
@@ -311,7 +315,14 @@ class Shelf {
 // to the next shelf — the "nearest" group around a focused tile has to be
 // this one for the arrows to leave a shelf at all.
 export class ShelfView {
-    constructor({shelves = [], tileSize, onActivate, onContextMenu}) {
+    // `height` is the page's own budget (libraryView.js `_page`, already
+    // short of the header and the footer), in physical px. Given it, the
+    // ScrollView takes exactly that much room and stops there — top-aligned
+    // rather than filling the stack that hosts it, which is left unclipped
+    // on purpose for a grid's hovered edge tiles — so a shelf ends above the
+    // player bar instead of running behind it; anything taller than that
+    // just scrolls, which is the ScrollView's job either way.
+    constructor({shelves = [], tileSize, height = 0, onActivate, onContextMenu}) {
         this._idleSources = new Set();
 
         this._list = new St.BoxLayout({
@@ -322,6 +333,11 @@ export class ShelfView {
         this._scroll = new St.ScrollView({style_class: 'vfade mm-shelf-scroll', x_expand: true, y_expand: true});
         this._scroll.set_policy(St.PolicyType.NEVER, St.PolicyType.AUTOMATIC);
         this._scroll.set_child(this._list);
+        if (height > 0) {
+            this._scroll.y_expand = false;
+            this._scroll.y_align = Clutter.ActorAlign.START;
+            this._scroll.height = height;
+        }
 
         global.focus_manager.add_group(this._list);
 
@@ -334,6 +350,16 @@ export class ShelfView {
 
     get actor() {
         return this._scroll;
+    }
+
+    // Where a navigation key lands when nothing inside is focused yet — the
+    // host's step down from the tabs, as a grid's own focusFirst() is.
+    focusFirst() {
+        const tile = this._shelves[0]?.firstTile;
+        if (!tile)
+            return false;
+        tile.grab_key_focus();
+        return true;
     }
 
     destroy() {

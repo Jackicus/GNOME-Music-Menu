@@ -1,7 +1,11 @@
-// The player bar: a full-width strip under a library's tabs (libraryView's
-// footer slot), always the same three widgets — art/title/artist on the
-// left, transport and a scrubber in the middle — whatever the engine is
-// doing. Nothing here talks to MPRIS directly: everything reads Player's
+// The player bar: a compact, centred card under a library's tabs
+// (libraryView's footer slot; the CSS width caps it to the grid's own block
+// rather than the full screen), always the same three widgets —
+// art/title/artist on the left, transport and a scrubber in the middle —
+// whatever the engine is doing. It shrinks (`mm-player-bar-compact`) when
+// there is no track, since the left zone and the whole centre column are
+// hidden then and there is nothing left to make 64px of room for. Nothing
+// here talks to MPRIS directly: everything reads Player's
 // `state` and its 'changed'/'position' signals, and every action either
 // calls back into Player (which knows the MPRIS fallbacks) or fires an
 // am.py command straight off, exactly as the shuffle/repeat buttons do.
@@ -57,7 +61,15 @@ export class PlayerBar {
     // Construction
     // ------------------------------------------------------------------
     _buildActor() {
-        this._actor = new St.BoxLayout({style_class: 'mm-player-bar', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        // Not `x_expand`/FILL: a plain BoxLayout child of libraryView's
+        // vertical box defaults to filling the full width, which is what
+        // made this a full-width strip. CENTER instead sizes it to its own
+        // CSS `width` (a compact card) and centres that under the grid.
+        this._actor = new St.BoxLayout({
+            style_class: 'mm-player-bar',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
 
         // Left: art + title/artist, clickable through to Now Playing.
         this._left = new St.Button({
@@ -168,6 +180,12 @@ export class PlayerBar {
 
         this._left.visible = !!track;
         this._center.visible = !!track;
+        // The compact height (stylesheet.css): with no track there is no art,
+        // title/artist or transport row to make 64px of room for.
+        if (track)
+            this._actor.remove_style_class_name('mm-player-bar-compact');
+        else
+            this._actor.add_style_class_name('mm-player-bar-compact');
         if (!track) {
             this._empty.visible = this._engineRunning !== false;
             this._startButton.visible = this._engineRunning === false;

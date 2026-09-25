@@ -296,33 +296,22 @@
     text-align: center;
 }
 
+.mm-row-number {
+    font-feature-settings: "tnum";
+}
+
 /* The number and the play glyph sit on top of each other in the index bin;
- * hover, focus and the playing row's own class decide which one is opaque,
- * so createRow never has to poll either by hand. */
+ * `createRow` (widgets.js) shows and hides them directly off crossing
+ * events, key focus and `setNowPlaying` — not a `:hover`/`:focus` rule
+ * reaching into a child (Gotchas: no rule keys a descendant off a parent's
+ * `:hover`). This is paint only. */
 .mm-row-play-icon {
     color: rgba(250, 250, 251, 0.85);
-    opacity: 0;
-    transition-duration: 120ms;
-}
-
-.mm-row:hover .mm-row-number,
-.mm-row:focus .mm-row-number {
-    opacity: 0;
-}
-
-.mm-row:hover .mm-row-play-icon,
-.mm-row:focus .mm-row-play-icon {
-    opacity: 1;
 }
 
 /* The row currently playing keeps its glyph up without a pointer near it, in
  * the accent, exactly as the theme already uses -st-accent-color elsewhere. */
-.mm-row-playing .mm-row-number {
-    opacity: 0;
-}
-
 .mm-row-playing .mm-row-play-icon {
-    opacity: 1;
     color: -st-accent-color;
 }
 
@@ -406,14 +395,27 @@
 
 /* ---- Player bar (playerBar.js) ---------------------------------------- */
 
+/* A compact card, not a full-width strip: width caps out around the grid's
+ * own centred block (mediaGrid.js's page is inset ARROWS_SHARE + page
+ * padding either side) and libraryView.js centres it under the grid rather
+ * than stretching it — see playerBar.js's x_align. Height is the "playing"
+ * state; `.mm-player-bar-compact` (playerBar.js, toggled with the track)
+ * shrinks it for "Not Playing"/"Start Apple Music", where there is no
+ * transport row or scrubber to make room for. */
 .mm-player-bar {
     height: 64px;
     min-height: 64px;
+    width: 46em;
     background-color: rgba(34, 34, 38, 0.88);
-    border-top: 1px solid rgba(250, 250, 251, 0.08);
+    border: 1px solid rgba(250, 250, 251, 0.08);
     border-radius: 18px;
-    padding: 6px 16px;
+    padding: 0.5em 1em;
     spacing: 16px;
+}
+
+.mm-player-bar-compact {
+    height: 48px;
+    min-height: 48px;
 }
 
 /* Left zone: now-playing metadata & album art trigger for NowPlayingView */
@@ -797,9 +799,12 @@
     -st-vfade-offset: 24px;
 }
 
+/* Horizontal inset matching the grid's own side margins (mediaGrid.js's
+ * ARROWS_SHARE/PAGE_PADDING_H), so a shelf's title, tiles and "See All"
+ * don't run to the screen edge the way the grid's own block never does. */
 .mm-shelf-list {
     spacing: 32px;
-    padding: 4px 4px 24px 4px;
+    padding: 4px 3em 24px 3em;
 }
 
 .mm-shelf {
