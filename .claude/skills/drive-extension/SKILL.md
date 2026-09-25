@@ -221,6 +221,12 @@ reads as "no change". `logs` hides D-Bus activation and portal chatter; `logs 20
   The surface's focus watcher takes the keyboard back from them, so anything
   typed into a window there (the prefs included) goes nowhere. Test keyboard
   input into a window with `library-opens-in` `menu` or `modal`.
+- **The nested session has a bus of its own**, so the real engine's MPRIS
+  player is never seen there and the player bar stays on "Start Apple Music".
+  `./scripts/nested.sh run python3 scripts/fake_player.py docs/screenshots/menu.jpg &`
+  puts a pretend player on that bus (a track on music.apple.com, playing)
+  so the transport, the scrubber and Now Playing can be looked at. Clicking
+  the bar's left zone opens Now Playing. `pkill -f fake_player.py` when done.
 - **A game controller is `scripts/vpad.py`**, a virtual Xbox 360 pad on
   uinput driven through a FIFO (`tap A`, `hat down`, `stick right 1.0`). It
   is a real device for the whole machine while it runs; `quit` it when done.
