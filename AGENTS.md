@@ -7,10 +7,10 @@ pops up an album pane with its track list. A **player bar** shows what's
 playing. Where the library opens is a setting: the overview slot, a pop-up
 panel, or the desktop wallpaper. Shell versions 48–50, tested on 50.5.
 
-The app is a **copy of GNOME-Video-Menu** (`../GNOME-Video-Menu`, the sibling
+The app is a **copy of GNOME-Video-Menu** (`/home/jackt/Projects/GNOME-Extensions/GNOME-Video-Menu`, the sibling
 extension for TV and films) with its namespace renamed: `media-libraries` →
 `music-menu`, `MediaLibraries*` → `MusicMenu*`, `ml-` → `mm-`. Its `CLAUDE.md`
-(`../GNOME-Video-Menu/CLAUDE.md`) explains every mechanism still in this tree,
+(`/home/jackt/Projects/GNOME-Extensions/GNOME-Video-Menu/CLAUDE.md`) explains every mechanism still in this tree,
 including the grid, the folder-dialog pop-up, the surface, focus handling and
 the gotchas. **Read it before changing anything under `src/lib/`.** Its
 **Design rules and Gotchas sections apply here unchanged**, including:
