@@ -804,7 +804,14 @@ def handle_search(term, library=False, limit=20, no_start=False):
             if not isinstance(section_data, dict):
                 continue
             for raw_item in section_data.get("data", []):
-                items.append(sync.normalize_item(raw_item, cache_dir, include_groups=False))
+                item = sync.normalize_item(raw_item, cache_dir, include_groups=False)
+                # A catalog hit's art is not in the cache yet, and a search
+                # must not wait on downloads: hand the search provider a small
+                # remote URL instead, which it fetches asynchronously.
+                if not (item.get("art") and os.path.exists(item["art"])):
+                    url = ((raw_item.get("attributes") or {}).get("artwork") or {}).get("url")
+                    item["art"] = sync.template_artwork_url(url, 128, 128) if url else None
+                items.append(item)
         return {"items": items}
     except Exception as e:
         raise AmError("api", f"Search failed: {e}")
