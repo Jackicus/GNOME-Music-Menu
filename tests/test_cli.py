@@ -37,7 +37,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(parse(["engine", "status"])[0], "engine_status")
 
     def test_status_never_starts(self):
-        self.assertEqual(parse(["status"]), ("handle_status", (), {"no_start": True}))
+        self.assertEqual(parse(["status"]), ("handle_status", (), {}))
 
     def test_no_start_anywhere(self):
         self.assertEqual(parse(["sync"]), ("handle_sync", (), {"only": None, "no_start": False}))

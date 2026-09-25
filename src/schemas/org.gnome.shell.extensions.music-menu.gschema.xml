@@ -68,11 +68,6 @@
             <summary>Show player bar</summary>
             <description>Show the playback control bar at the bottom of the library view.</description>
         </key>
-        <key name="play-on-new-workspace" type="b">
-            <default>false</default>
-            <summary>Play on a new workspace</summary>
-            <description>When on, playing something moves to an empty workspace first.</description>
-        </key>
 
         <!-- Where each thing opens. Two independent choices out of one
              vocabulary: the same four words mean the same four places on

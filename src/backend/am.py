@@ -73,54 +73,74 @@ def get_state_file():
     return os.path.join(d, "engine.json")
 
 
+SCHEMA_ID = "org.gnome.shell.extensions.music-menu"
+
+# The extension's settings, the same ones the shell and the preferences read.
+# An extension's schema is compiled into its own `schemas/` directory, not the
+# system's, so the default schema source never finds it: it is looked up next
+# to this file, with the system source as the parent. Loaded once, and only
+# when a command actually needs a setting -- importing gi costs most of a
+# short command's run time, and a command against a running engine needs none.
+_settings = None
+_settings_loaded = False
+
+
 def get_settings():
+    global _settings, _settings_loaded
+    if _settings_loaded:
+        return _settings
+    _settings_loaded = True
     try:
         from gi.repository import Gio
 
-        source = Gio.SettingsSchemaSource.get_default()
-        if source and source.lookup("org.gnome.shell.extensions.music-menu", True):
-            return Gio.Settings.new("org.gnome.shell.extensions.music-menu")
+        parent = Gio.SettingsSchemaSource.get_default()
+        schema_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "schemas")
+        source = parent
+        if os.path.exists(os.path.join(schema_dir, "gschemas.compiled")):
+            source = Gio.SettingsSchemaSource.new_from_directory(schema_dir, parent, False)
+        schema = source.lookup(SCHEMA_ID, True) if source else None
+        if schema:
+            _settings = Gio.Settings.new_full(schema, None, None)
     except Exception:
-        pass
-    return None
+        _settings = None
+    return _settings
 
 
-def get_setting(key, fallback=None):
-    defaults = {
-        "browser-command": "google-chrome-stable",
-        "engine-port": 9227,
-        "engine-headless": True,
-        "engine-autostart": True,
-        "sync-interval": 60,
-        "player-bar": True,
-        "last-sync": "",
-    }
+SETTING_DEFAULTS = {
+    "browser-command": "google-chrome-stable",
+    "engine-port": 9227,
+    "engine-headless": True,
+    "engine-autostart": True,
+}
+
+
+def get_setting(key):
+    """A setting's value, or the schema's default when settings are unreachable."""
     settings = get_settings()
     if settings is not None:
         try:
-            if key in ("engine-port", "sync-interval"):
-                return settings.get_int(key)
-            elif key in ("engine-headless", "engine-autostart", "player-bar"):
-                return settings.get_boolean(key)
-            elif key in ("browser-command", "last-sync"):
-                return settings.get_string(key)
+            value = settings.get_value(key).unpack()
+            if type(value) is type(SETTING_DEFAULTS[key]):
+                return value
         except Exception:
             pass
-    return defaults.get(key, fallback)
+    return SETTING_DEFAULTS[key]
 
 
 def set_setting(key, value):
+    """Write a setting; nothing happens when settings are unreachable."""
     settings = get_settings()
-    if settings is not None:
-        try:
-            if isinstance(value, str):
-                settings.set_string(key, value)
-            elif isinstance(value, bool):
-                settings.set_boolean(key, value)
-            elif isinstance(value, int):
-                settings.set_int(key, value)
-        except Exception:
-            pass
+    if settings is None:
+        return
+    try:
+        if isinstance(value, bool):
+            settings.set_boolean(key, value)
+        elif isinstance(value, int):
+            settings.set_int(key, value)
+        else:
+            settings.set_string(key, str(value))
+    except Exception:
+        pass
 
 
 def get_port():
@@ -130,7 +150,7 @@ def get_port():
             return int(env_port)
         except ValueError:
             pass
-    return get_setting("engine-port", 9227)
+    return get_setting("engine-port")
 
 
 # ---------------------------------------------------------------------------
@@ -190,26 +210,21 @@ def is_port_responding(port, timeout=1):
 
 
 def engine_status():
+    """{running, pid, port, headless}. A running engine is described from its
+    state file alone, so the common case costs no settings lookup."""
     state = get_state()
-    port = get_port()
-    headless = get_setting("engine-headless", True)
     if state:
         pid = state.get("pid")
-        port = state.get("port", port)
-        headless = state.get("headless", headless)
+        port = state.get("port") or get_port()
         if is_pid_running(pid) and is_port_responding(port):
-            return {"running": True, "pid": pid, "port": port, "headless": headless}
-    return {"running": False, "pid": None, "port": port, "headless": headless}
+            return {"running": True, "pid": pid, "port": port, "headless": bool(state.get("headless", True))}
+    return {"running": False, "pid": None, "port": get_port(), "headless": get_setting("engine-headless")}
 
 
 def engine_stop():
     state = get_state()
-    port = get_port()
-    headless = get_setting("engine-headless", True)
     if state:
         pid = state.get("pid")
-        port = state.get("port", port)
-        headless = state.get("headless", headless)
         if pid and is_pid_running(pid):
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -222,7 +237,7 @@ def engine_stop():
             except OSError:
                 pass
     remove_state()
-    return {"running": False, "pid": None, "port": port, "headless": headless}
+    return {"running": False, "pid": None, "port": get_port(), "headless": get_setting("engine-headless")}
 
 
 def wait_for_chrome(port, deadline_sec=15):
@@ -255,10 +270,16 @@ def ensure_bridge(client, timeout=15):
     # The page navigates on its own while it starts (music.apple.com redirects
     # to /<storefront>/new), and a navigation wipes `window`, so an injection
     # made during start-up is lost. Keep re-injecting (it is idempotent) until
-    # the bridge reports MusicKit ready.
+    # the bridge reports MusicKit ready. A page that already has this bridge
+    # answers the probe alone, which spares every later command the source.
+    probe = (f"(window.__musicMenu && window.__musicMenu.__version === {json.dumps(version)})"
+             " ? window.__musicMenu.status() : null")
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
+            st = client.evaluate(probe, await_promise=False)
+            if st and st.get("ready"):
+                return
             client.evaluate(bridge_code, await_promise=False)
             st = client.evaluate("window.__musicMenu ? window.__musicMenu.status() : null")
             if st and st.get("ready"):
@@ -271,7 +292,7 @@ def ensure_bridge(client, timeout=15):
 
 def engine_start(headless=None):
     if headless is None:
-        headless = get_setting("engine-headless", True)
+        headless = get_setting("engine-headless")
 
     curr = engine_status()
     if curr["running"]:
@@ -288,7 +309,7 @@ def engine_start(headless=None):
         else:
             engine_stop()
 
-    browser_cmd = get_setting("browser-command", "google-chrome-stable")
+    browser_cmd = get_setting("browser-command")
     browser_bin = shutil.which(browser_cmd)
     if not browser_bin:
         for candidate in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser"):
@@ -356,9 +377,9 @@ def ensure_engine_running(no_start=False):
         return st
     if no_start:
         raise AmError("engine-down", "Chrome engine is not running and --no-start was passed")
-    if not get_setting("engine-autostart", True):
+    if not get_setting("engine-autostart"):
         raise AmError("engine-down", "Chrome engine is not running and autostart is disabled")
-    return engine_start(headless=True)
+    return engine_start()
 
 
 def get_bridge_client(no_start=False):
@@ -395,7 +416,7 @@ def handle_signin():
         client.close()
 
 
-def handle_status(no_start=True):
+def handle_status():
     st = engine_status()
     if not st["running"]:
         return {"engine": False, "authorized": False, "storefront": "", "bitrate": 0}
@@ -623,24 +644,29 @@ def handle_item(kind, item_id, no_start=False):
                 "attributes": raw_obj.get("attributes", {}),
             }
             album_stubs = raw_obj.get("relationships", {}).get("albums", {}).get("data", [])
-            full_albums = []
+            endpoints = []
             for stub in album_stubs:
                 alb_id = stub.get("id")
                 alb_is_lib = isinstance(alb_id, str) and (alb_id.startswith("l.") or alb_id.startswith("p."))
-                alb_endpoint = (
+                endpoints.append(
                     f"/v1/me/library/albums/{alb_id}?include=tracks"
                     if alb_is_lib
                     else f"/v1/catalog/{sf}/albums/{alb_id}?include=tracks"
                 )
-                try:
-                    alb_res = client.evaluate(f"window.__musicMenu.api({json.dumps(alb_endpoint)})", await_promise=True)
-                    alb_data = alb_res.get("data", []) if alb_res else []
-                    if alb_data:
-                        full_albums.append(alb_data[0])
-                    else:
-                        full_albums.append(stub)
-                except Exception:
-                    full_albums.append(stub)
+            # All at once in the page, not one round trip per album: an
+            # artist with a couple of dozen albums took seconds one by one.
+            try:
+                answers = client.evaluate(f"window.__musicMenu.apiAll({json.dumps(endpoints)})",
+                                          await_promise=True, timeout=60)
+            except Exception:
+                answers = []
+            if not isinstance(answers, list):
+                answers = []
+            full_albums = []
+            for i, stub in enumerate(album_stubs):
+                res_i = answers[i] if i < len(answers) else None
+                alb_data = res_i.get("data", []) if isinstance(res_i, dict) else []
+                full_albums.append(alb_data[0] if alb_data else stub)
             return sync.download_item_art(sync.normalize_artist(artist_obj, cache_dir, albums=full_albums), cache_dir)
 
         return sync.download_item_art(sync.normalize_item(raw_obj, cache_dir, include_groups=True), cache_dir)
@@ -956,7 +982,7 @@ def run_cli(argv):
     if c == "signin":
         return handle_signin()
     if c == "status":
-        return handle_status(no_start=True)
+        return handle_status()
     if c == "sync":
         return handle_sync(only=a.only, no_start=ns)
     if c == "item":

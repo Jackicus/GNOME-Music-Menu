@@ -1,9 +1,9 @@
 // Reads ~/.cache/music-menu/library.json (written by backend/am.py sync) and
 // resolves it into what the views render. The Item and shelf shapes are
-// am.py's own — see AGENTS.md — and are used as they come off disk; the one
-// thing this module does is check each item's `art` against what is actually
-// in the cache, so a cleared cache reads as no artwork rather than a broken
-// background image.
+// am.py's own — see backend/README.md — and are used as they come off disk;
+// the one thing this module does is check each item's `art` against what is
+// actually in the cache, so a cleared cache reads as no artwork rather than a
+// broken background image.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';

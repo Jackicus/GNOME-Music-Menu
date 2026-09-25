@@ -1,7 +1,7 @@
 """Library synchronization, Apple Music API normalization, and artwork caching.
 
-Transforms Apple Music API JSON into the Item and Track schemas defined in AGENTS.md,
-manages artwork caching and pruning, and builds library.json.
+Transforms Apple Music API JSON into the Item and Track shapes README.md
+describes, manages artwork caching and pruning, and builds library.json.
 Python standard library only.
 """
 
@@ -448,7 +448,7 @@ def _extract_catalog_id(attrs: dict, raw_item: dict, resource_type: str) -> str 
 
 
 def normalize_track(raw_track: dict, index: int = 0) -> dict:
-    """Turn an Apple Music API track into the AGENTS.md Track shape.
+    """Turn an Apple Music API track into the Track shape.
 
     Track = {
       "id": "...", "catalogId": "..." | null, "title": "...", "artist": "...",
@@ -514,7 +514,7 @@ def normalize_album(
     cache_dir: str | None = None,
     tracks: list[dict] | None = None,
 ) -> dict:
-    """Turn an Apple Music API album into the AGENTS.md Item shape with kind='album'.
+    """Turn an Apple Music API album into the Item shape with kind='album'.
 
     Supports both signatures:
       normalize_album(raw_album, tracks=None, cache_dir=None)
@@ -646,7 +646,7 @@ def normalize_artist(
     cache_dir: str | None = None,
     albums: list[dict] | None = None,
 ) -> dict:
-    """Turn an Apple Music API artist into the AGENTS.md Item shape with kind='artist'.
+    """Turn an Apple Music API artist into the Item shape with kind='artist'.
 
     Supports both signatures:
       normalize_artist(raw_artist, albums=None, cache_dir=None)
@@ -743,7 +743,7 @@ def normalize_playlist(
     cache_dir: str | None = None,
     tracks: list[dict] | None = None,
 ) -> dict:
-    """Turn an Apple Music API playlist into the AGENTS.md Item shape with kind='playlist'.
+    """Turn an Apple Music API playlist into the Item shape with kind='playlist'.
 
     Supports both signatures:
       normalize_playlist(raw_playlist, tracks=None, cache_dir=None)
@@ -843,7 +843,7 @@ def normalize_playlist(
 
 
 def normalize_station(raw_station: dict, cache_dir: str | None = None) -> dict:
-    """Turn an Apple Music API station into the AGENTS.md Item shape with kind='station'.
+    """Turn an Apple Music API station into the Item shape with kind='station'.
 
     groups=[]
     """

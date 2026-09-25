@@ -6,8 +6,8 @@
 // those keys (actions.js `stands`) is simply that key, replayed through a
 // virtual keyboard of our own: it lands wherever the keyboard would, in the
 // wallpaper's pages, the overview's grid, a pop-up panel, and does exactly
-// what the key does there. Paging, Home and marking watched have no key, and
-// are done here.
+// what the key does there. Paging, Home and play/pause have no key, and are
+// done here.
 //
 // Two ways in. A key bound to an action is handed over by the view it reached
 // (`handleBoundKey`, from each view's own key handler), so a binding only

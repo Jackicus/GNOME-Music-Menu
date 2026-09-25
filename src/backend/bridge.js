@@ -151,6 +151,13 @@
             return await apiCall(path, params, options);
         },
 
+        // Several GET requests at once; a failed one is null in its place.
+        apiAll: async function (paths) {
+            return await Promise.all((paths || []).map(function (path) {
+                return apiCall(path).catch(function () { return null; });
+            }));
+        },
+
         play: async function (kind, id, options) {
             const mk = getMusicKit();
             if (!mk) throw new Error('MusicKit not initialized');

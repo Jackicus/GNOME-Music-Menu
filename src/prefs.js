@@ -128,13 +128,6 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         settings.bind('player-bar', playerBarRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         view.add(playerBarRow);
 
-        const playRow = new Adw.SwitchRow({
-            title: 'Play on a new workspace',
-            subtitle: 'The player opens on an empty workspace of its own, leaving the one you picked from as it was',
-        });
-        settings.bind('play-on-new-workspace', playRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        view.add(playRow);
-
         const workspaces = new Adw.ActionRow({
             title: 'Workspaces Music Menu is using stay open',
             subtitle: 'A workspace opened for the library or for a picked item is held until you close it or go back from it, so GNOME does not fold it away. With a fixed number of workspaces, set enough in Settings → Multitasking.',
@@ -486,8 +479,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             syncRow.set_subtitle('Syncing library from Apple Music…');
             try {
                 const res = await amctl.run(['sync']);
-                const nowIso = res?.generated || new Date().toISOString();
-                settings.set_string('last-sync', nowIso);
+                const nowIso = res?.generated || settings.get_string('last-sync') || new Date().toISOString();
                 syncRow.set_subtitle(formatSyncSubtitle(nowIso, res?.counts));
                 showOutcome('emblem-ok-symbolic', 'Synced', 2);
             } catch (err) {
