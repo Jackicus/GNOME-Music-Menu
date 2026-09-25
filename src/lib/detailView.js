@@ -76,6 +76,7 @@ export class DetailView {
         this._columns = null;
         this._main = null;
         this._buildPendingMain = null;
+        this._loading = false;
         this.hero = null;
         this.side = null;
         this.item = null;
@@ -153,6 +154,7 @@ export class DetailView {
         this.actor.destroy_all_children();
         this.item = item;
         this._section = section;
+        this._loading = false;
         this._groups = item.groups ?? [];
         this._groupIndex = 0;
         this._list = null;
@@ -182,7 +184,7 @@ export class DetailView {
         // Only the artwork and its buttons are built now. The rest is built on
         // the next idle, off the frames of the flight or the zoom that is
         // opening the pane, and the list inside it later still as it scrolls.
-        this._buildPendingMain = () => this._buildMain(item);
+        this._buildPendingMain = () => this._buildMain(this.item);
         this._deferredMain = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._deferredMain = 0;
             this._addMain();
@@ -190,6 +192,55 @@ export class DetailView {
                 this.revealMain();
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    // The same item again, now with what it lacked: its groups, fetched after
+    // the pane opened on a shelf's or a search's item, which library.json
+    // holds without a track list. The side column stays — its artwork is what
+    // the pane zoomed out of — and the second column is built again in place
+    // of the one that said "Loading…". Anything else showing is left alone.
+    update(item) {
+        if (!this.item || item?.id !== this.item.id)
+            return;
+        this.item = item;
+        this._groups = item.groups ?? [];
+        this._groupIndex = 0;
+        this._tabButtons = [];
+        this._trackRows = new Map();
+        this._nowPlayingRow = null;
+        if (this._buildPendingMain)
+            return;   // not built yet: the pending build reads this.item
+        if (this._deferredList) {
+            GLib.source_remove(this._deferredList);
+            this._deferredList = 0;
+        }
+        // A built column is one on its way in or already there — nothing
+        // builds it but revealMain — so the one that replaces it is simply
+        // shown, whatever frame of the fade the old one was on.
+        this._list = null;
+        this._listHost = null;
+        this._main?.destroy();
+        this._main = this._buildMain(item);
+        this._columns.add_child(this._main);
+        this._fillList(0);
+    }
+
+    // What an empty group says: nothing, or nothing yet.
+    get _emptyText() {
+        return this._loading ? 'Loading…' : 'Nothing here yet.';
+    }
+
+    // While a groupless item's list is on its way (app.js `_loadGroups`).
+    setLoading(loading) {
+        this._loading = !!loading;
+        if (this._list instanceof St.Label)
+            this._list.text = this._emptyText;
+    }
+
+    // A station is what has no track list; anything else without groups is
+    // simply one whose list has not been fetched yet.
+    get _isStation() {
+        return this.item?.kind === 'station';
     }
 
     // Build the second column, hidden, if it is not there yet.
@@ -290,7 +341,7 @@ export class DetailView {
             return button;
         };
 
-        if (this._groups.length === 0) {
+        if (this._isStation) {
             // A station: nothing to shuffle, so just the one big button.
             side.add_child(play('Play', [], 'button default mm-action mm-action-big'));
             return side;
@@ -310,7 +361,7 @@ export class DetailView {
     // Right: title, artist, facts line, summary, group tabs, list.
     _buildMain(item) {
         const main = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_expand: true, style_class: 'mm-detail-main'});
-        const isStation = this._groups.length === 0;
+        const isStation = this._isStation;
 
         main.add_child(createLabel(item.title, 'mm-detail-title'));
 
@@ -388,9 +439,9 @@ export class DetailView {
 
         const group = this._groups[index];
         const old = this._list;
-        const list = group?.entries.length
+        const list = group?.entries?.length
             ? this._buildList(group)
-            : new St.Label({text: 'Nothing here yet.', style_class: 'mm-empty-hint', x_expand: true});
+            : new St.Label({text: this._emptyText, style_class: 'mm-empty-hint', x_expand: true});
         this._list = list;
         this._listHost.add_child(list);
 

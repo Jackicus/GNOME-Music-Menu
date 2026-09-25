@@ -7,6 +7,7 @@ Error codes: engine-down, not-signed-in, api, timeout, usage.
 """
 
 from datetime import datetime, timezone
+import argparse
 import hashlib
 import json
 import os
@@ -411,6 +412,59 @@ def handle_status(no_start=True):
         return {"engine": False, "authorized": False, "storefront": "", "bitrate": 0}
 
 
+def _log(message):
+    """A line on stderr: am.py's stdout is the one JSON object, nothing else."""
+    sys.stderr.write(f"am.py: {message}\n")
+    sys.stderr.flush()
+
+
+def _api(client, path, params=None, retries=3):
+    """One Apple Music API call through the bridge, retried.
+
+    MusicKit answers a failed request with `{"errors": [...]}` and a 200, so
+    that is a failure here as much as a thrown promise is. Each retry waits a
+    little longer than the last; the final failure raises AmError("api").
+    """
+    expr = f"window.__musicMenu.api({json.dumps(path)}, {json.dumps(params or {})})"
+    last = None
+    for attempt in range(max(1, retries)):
+        try:
+            res = client.evaluate(expr, await_promise=True)
+            if isinstance(res, dict) and res.get("errors"):
+                first = res["errors"][0] if isinstance(res["errors"], list) and res["errors"] else {}
+                raise AmError("api", f"{first.get('status', '?')} {first.get('title', 'error')}: {first.get('detail', '')}".strip())
+            return res if isinstance(res, dict) else {}
+        except Exception as e:
+            last = e
+            if attempt + 1 < retries:
+                time.sleep(0.5 * (2 ** attempt))
+    raise AmError("api", f"{path}: {last}")
+
+
+def _api_all(client, path, params=None, page=100, limit=None):
+    """Every page of a paged endpoint, following `next` by offset."""
+    out = []
+    offset = 0
+    while True:
+        p = dict(params or {}, limit=page, offset=offset)
+        res = _api(client, path, p)
+        data = res.get("data") or []
+        out.extend(data)
+        if not data or not res.get("next") or (limit and len(out) >= limit):
+            break
+        offset += len(data)
+    return out
+
+
+def _previous_library(cache_dir):
+    """What library.json holds now, or {} — a failed fetch keeps its old entry."""
+    try:
+        with open(os.path.join(cache_dir, "library.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def handle_sync(only=None, no_start=False):
     client = get_bridge_client(no_start=no_start)
     try:
@@ -419,28 +473,14 @@ def handle_sync(only=None, no_start=False):
             raise AmError("not-signed-in", "User is not signed in to Apple Music")
 
         cache_dir = get_cache_dir()
+        previous = _previous_library(cache_dir)
         counts = {"albums": 0, "artists": 0, "playlists": 0, "radio": 0, "shelves": 0}
         sections = {}
         shelves = []
 
         # 1. Albums & Artists from songs
         if not only or only in ("albums", "artists"):
-            songs = []
-            offset = 0
-            while True:
-                expr = f"window.__musicMenu.api('/v1/me/library/songs', {{include: 'albums', limit: 100, offset: {offset}}})"
-                try:
-                    res = client.evaluate(expr, await_promise=True)
-                except Exception as e:
-                    raise AmError("api", f"Failed to fetch library songs: {e}")
-                data = res.get("data", []) if res else []
-                if not data:
-                    break
-                songs.extend(data)
-                if "next" not in res or len(data) < 100:
-                    break
-                offset += len(data)
-
+            songs = _api_all(client, "/v1/me/library/songs", {"include": "albums"})
             albums, artists = sync.group_songs_into_albums_and_artists(songs, cache_dir)
             sections["albums"] = albums
             sections["artists"] = artists
@@ -449,52 +489,59 @@ def handle_sync(only=None, no_start=False):
 
         # 2. Playlists
         if not only or only == "playlists":
-            expr = "window.__musicMenu.api('/v1/me/library/playlists', {limit: 100})"
-            try:
-                res = client.evaluate(expr, await_promise=True)
-                raw_playlists = res.get("data", []) if res else []
-            except Exception as e:
-                raise AmError("api", f"Failed to fetch library playlists: {e}")
-
+            raw_playlists = _api_all(client, "/v1/me/library/playlists")
+            old_playlists = {
+                p.get("id"): p for p in (previous.get("sections") or {}).get("playlists") or []
+                if isinstance(p, dict)
+            }
             playlists = []
             for p in raw_playlists:
                 p_id = p.get("id")
-                t_expr = f"window.__musicMenu.api('/v1/me/library/playlists/{p_id}/tracks', {{limit: 100}})"
                 try:
-                    t_res = client.evaluate(t_expr, await_promise=True)
-                    tracks = t_res.get("data", []) if t_res else []
-                except Exception:
+                    tracks = _api_all(client, f"/v1/me/library/playlists/{p_id}/tracks")
+                except AmError as e:
+                    # The listing stands; the tracks it had last time stay
+                    # rather than turning into an empty playlist.
+                    _log(f"sync: playlist {p_id} tracks: {e.message}")
+                    old = old_playlists.get(p_id)
+                    if old and old.get("groups"):
+                        playlists.append(old)
+                        continue
                     tracks = []
-                p_norm = sync.normalize_playlist(p, cache_dir, tracks=tracks)
-                playlists.append(p_norm)
+                playlists.append(sync.normalize_playlist(p, cache_dir, tracks=tracks))
             sections["playlists"] = playlists
             counts["playlists"] = len(playlists)
 
         # 3. Radio
         if not only or only == "radio":
-            expr = "window.__musicMenu.api('/v1/me/recent/radio-stations')"
             try:
-                res = client.evaluate(expr, await_promise=True)
-                raw_stations = res.get("data", []) if res else []
-            except Exception:
-                raw_stations = []
-            radio = [sync.normalize_station(st_obj, cache_dir) for st_obj in raw_stations]
-            sections["radio"] = radio
-            counts["radio"] = len(radio)
+                raw_stations = _api(client, "/v1/me/recent/radio-stations").get("data") or []
+            except AmError as e:
+                _log(f"sync: radio: {e.message}")
+                raw_stations = None
+            if raw_stations is None:
+                sections["radio"] = (previous.get("sections") or {}).get("radio") or []
+            else:
+                sections["radio"] = [sync.normalize_station(st_obj, cache_dir) for st_obj in raw_stations]
+            counts["radio"] = len(sections["radio"])
 
         # 4. Shelves
         if not only or only == "shelves":
+            # Each endpoint has a page cap of its own (a bigger `limit` is a
+            # 400, not a clamp): 10 for heavy rotation, 20 for recently played.
             shelf_defs = [
-                ("heavy-rotation", "Heavy Rotation", "/v1/me/history/heavy-rotation"),
-                ("recently-added", "Recently Added", "/v1/me/library/recently-added"),
-                ("recently-played", "Recently Played", "/v1/me/recent/played"),
-                ("made-for-you", "Made for You", "/v1/me/recommendations"),
+                ("heavy-rotation", "Heavy Rotation", "/v1/me/history/heavy-rotation", 10),
+                ("recently-added", "Recently Added", "/v1/me/library/recently-added", 25),
+                ("recently-played", "Recently Played", "/v1/me/recent/played", 20),
+                ("made-for-you", "Made for You", "/v1/me/recommendations", 25),
             ]
-            for key, title, endpoint in shelf_defs:
+            old_shelves = {
+                sh.get("key"): sh for sh in previous.get("shelves") or [] if isinstance(sh, dict)
+            }
+            for key, title, endpoint, page in shelf_defs:
                 items = []
                 try:
-                    res = client.evaluate(f"window.__musicMenu.api('{endpoint}', {{limit: 25}})", await_promise=True)
-                    raw_items = res.get("data", []) if res else []
+                    raw_items = _api(client, endpoint, {"limit": page}).get("data") or []
                     if key == "made-for-you":
                         for rec in raw_items:
                             rec_items = rec.get("relationships", {}).get("contents", {}).get("data", [])
@@ -503,8 +550,9 @@ def handle_sync(only=None, no_start=False):
                     else:
                         for it in raw_items:
                             items.append(sync.normalize_item(it, cache_dir, include_groups=False))
-                except Exception:
-                    pass
+                except AmError as e:
+                    _log(f"sync: shelf {key}: {e.message}")
+                    items = (old_shelves.get(key) or {}).get("items") or []
                 shelves.append({"key": key, "title": title, "items": items})
             counts["shelves"] = sum(len(s["items"]) for s in shelves)
 
@@ -516,8 +564,12 @@ def handle_sync(only=None, no_start=False):
             "sections": sections,
             "shelves": shelves,
         }
+        # The listing first, so it is on disk whatever the artwork does; the
+        # artwork next, in threads; the pruning last, against the merged file.
         sync.save_library(lib_data, cache_dir, only=only)
-        sync.prune_art(lib_data, cache_dir)
+        art = sync.download_art(lib_data, cache_dir, log=_log)
+        counts["art"] = art
+        sync.prune_art(_previous_library(cache_dir) or lib_data, cache_dir)
         set_setting("last-sync", now_iso)
 
         return {"counts": counts, "generated": now_iso}
@@ -584,9 +636,9 @@ def handle_item(kind, item_id, no_start=False):
                         full_albums.append(stub)
                 except Exception:
                     full_albums.append(stub)
-            return sync.normalize_artist(artist_obj, cache_dir, albums=full_albums)
+            return sync.download_item_art(sync.normalize_artist(artist_obj, cache_dir, albums=full_albums), cache_dir)
 
-        return sync.normalize_item(raw_obj, cache_dir, include_groups=True)
+        return sync.download_item_art(sync.normalize_item(raw_obj, cache_dir, include_groups=True), cache_dir)
     finally:
         client.close()
 
@@ -830,177 +882,116 @@ def handle_search(term, library=False, limit=20, no_start=False):
 # ---------------------------------------------------------------------------
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse that reports usage errors as AmError('usage') instead of
+    printing to stderr and exiting 2 -- every failure is one JSON object."""
+
+    def error(self, message):
+        raise AmError("usage", message)
+
+
+def _build_parser():
+    p = _Parser(prog="am.py", add_help=False)
+    sub = p.add_subparsers(dest="command", parser_class=_Parser, required=True)
+
+    def cmd(name):
+        return sub.add_parser(name, add_help=False)
+
+    engine = cmd("engine").add_subparsers(dest="sub", parser_class=_Parser, required=True)
+    for name in ("start", "stop", "status"):
+        s = engine.add_parser(name, add_help=False)
+        if name == "start":
+            mode = s.add_mutually_exclusive_group()
+            mode.add_argument("--visible", dest="headless", action="store_false", default=None)
+            mode.add_argument("--headless", dest="headless", action="store_true", default=None)
+
+    cmd("signin")
+    cmd("status")
+    cmd("sync").add_argument("--only", choices=("albums", "artists", "playlists", "radio", "shelves"))
+
+    for name in ("item", "play", "play-next", "play-later", "love", "unlove", "add-to-library"):
+        s = cmd(name)
+        s.add_argument("kind")
+        s.add_argument("item_id", metavar="id")
+        if name == "play":
+            s.add_argument("--start-with", type=int, default=0, metavar="N")
+            s.add_argument("--shuffle", action="store_true")
+
+    cmd("control").add_argument("action")
+    cmd("seek").add_argument("sec")
+    cmd("volume").add_argument("val")
+    cmd("shuffle").add_argument("mode")
+    cmd("repeat").add_argument("mode")
+    cmd("now-playing")
+    cmd("queue")
+    cmd("playlists")
+    s = cmd("add-to-playlist")
+    s.add_argument("playlist_id", metavar="playlistId")
+    s.add_argument("song_id", metavar="songId")
+    cmd("lyrics").add_argument("song_id", metavar="catalogSongId")
+    s = cmd("search")
+    s.add_argument("term", nargs="+")
+    s.add_argument("--library", action="store_true")
+    s.add_argument("--limit", type=int, default=20, metavar="N")
+    return p
+
+
 def run_cli(argv):
-    no_start = "--no-start" in argv
-    args = [a for a in argv if a != "--no-start"]
-
-    if not args:
+    # --no-start is accepted anywhere, before or after the command.
+    ns = "--no-start" in argv
+    argv = [x for x in argv if x != "--no-start"]
+    if not argv:
         raise AmError("usage", "No command provided")
+    a = _build_parser().parse_args(argv)
+    c = a.command
 
-    cmd = args[0]
-
-    if cmd == "engine":
-        if len(args) < 2:
-            raise AmError("usage", "engine requires a subcommand: start, stop, status")
-        sub = args[1]
-        if sub == "start":
-            headless = None
-            if "--visible" in args[2:]:
-                headless = False
-            elif "--headless" in args[2:]:
-                headless = True
-            return engine_start(headless=headless)
-        elif sub == "stop":
-            return engine_stop()
-        elif sub == "status":
-            return engine_status()
-        else:
-            raise AmError("usage", f"Unknown engine subcommand: {sub}")
-
-    elif cmd == "signin":
+    if c == "engine":
+        return {"start": lambda: engine_start(headless=a.headless),
+                "stop": engine_stop, "status": engine_status}[a.sub]()
+    if c == "signin":
         return handle_signin()
-
-    elif cmd == "status":
+    if c == "status":
         return handle_status(no_start=True)
-
-    elif cmd == "sync":
-        only = None
-        if "--only" in args:
-            idx = args.index("--only")
-            if idx + 1 >= len(args):
-                raise AmError("usage", "--only requires a section: albums, artists, playlists, radio, shelves")
-            only = args[idx + 1]
-            if only not in ("albums", "artists", "playlists", "radio", "shelves"):
-                raise AmError("usage", f"Invalid section for --only: {only}")
-        return handle_sync(only=only, no_start=no_start)
-
-    elif cmd == "item":
-        if len(args) < 3:
-            raise AmError("usage", "item requires <kind> and <id>")
-        kind, item_id = args[1], args[2]
-        return handle_item(kind, item_id, no_start=no_start)
-
-    elif cmd == "play":
-        if len(args) < 3:
-            raise AmError("usage", "play requires <kind> and <id>")
-        kind, item_id = args[1], args[2]
-        start_with = 0
-        shuffle = False
-        idx = 3
-        while idx < len(args):
-            if args[idx] == "--start-with":
-                if idx + 1 >= len(args):
-                    raise AmError("usage", "--start-with requires an index number")
-                try:
-                    start_with = int(args[idx + 1])
-                except ValueError:
-                    raise AmError("usage", f"Invalid index for --start-with: {args[idx + 1]}")
-                idx += 2
-            elif args[idx] == "--shuffle":
-                shuffle = True
-                idx += 1
-            else:
-                raise AmError("usage", f"Unexpected argument for play: {args[idx]}")
-        return handle_play(kind, item_id, start_with=start_with, shuffle=shuffle, no_start=no_start)
-
-    elif cmd == "play-next":
-        if len(args) < 3:
-            raise AmError("usage", "play-next requires <kind> and <id>")
-        return handle_play_next(args[1], args[2], no_start=no_start)
-
-    elif cmd == "play-later":
-        if len(args) < 3:
-            raise AmError("usage", "play-later requires <kind> and <id>")
-        return handle_play_later(args[1], args[2], no_start=no_start)
-
-    elif cmd == "control":
-        if len(args) < 2:
-            raise AmError("usage", "control requires an action: play, pause, toggle, next, previous, stop")
-        return handle_control(args[1], no_start=no_start)
-
-    elif cmd == "seek":
-        if len(args) < 2:
-            raise AmError("usage", "seek requires seconds")
-        return handle_seek(args[1], no_start=no_start)
-
-    elif cmd == "volume":
-        if len(args) < 2:
-            raise AmError("usage", "volume requires a value between 0 and 1")
-        return handle_volume(args[1], no_start=no_start)
-
-    elif cmd == "shuffle":
-        if len(args) < 2:
-            raise AmError("usage", "shuffle requires a mode: on, off, toggle")
-        return handle_shuffle(args[1], no_start=no_start)
-
-    elif cmd == "repeat":
-        if len(args) < 2:
-            raise AmError("usage", "repeat requires a mode: none, one, all, cycle")
-        return handle_repeat(args[1], no_start=no_start)
-
-    elif cmd == "now-playing":
-        return handle_now_playing(no_start=no_start)
-
-    elif cmd == "queue":
-        return handle_queue(no_start=no_start)
-
-    elif cmd == "love":
-        if len(args) < 3:
-            raise AmError("usage", "love requires <kind> and <id>")
-        return handle_love(args[1], args[2], love=True, no_start=no_start)
-
-    elif cmd == "unlove":
-        if len(args) < 3:
-            raise AmError("usage", "unlove requires <kind> and <id>")
-        return handle_love(args[1], args[2], love=False, no_start=no_start)
-
-    elif cmd == "add-to-library":
-        if len(args) < 3:
-            raise AmError("usage", "add-to-library requires <kind> and <id>")
-        return handle_add_to_library(args[1], args[2], no_start=no_start)
-
-    elif cmd == "playlists":
-        return handle_playlists(no_start=no_start)
-
-    elif cmd == "add-to-playlist":
-        if len(args) < 3:
-            raise AmError("usage", "add-to-playlist requires <playlistId> and <songId>")
-        return handle_add_to_playlist(args[1], args[2], no_start=no_start)
-
-    elif cmd == "lyrics":
-        if len(args) < 2:
-            raise AmError("usage", "lyrics requires <catalogSongId>")
-        return handle_lyrics(args[1], no_start=no_start)
-
-    elif cmd == "search":
-        if len(args) < 2:
-            raise AmError("usage", "search requires <term>")
-        library = False
-        limit = 20
-        term_parts = []
-        idx = 1
-        while idx < len(args):
-            if args[idx] == "--library":
-                library = True
-                idx += 1
-            elif args[idx] == "--limit":
-                if idx + 1 >= len(args):
-                    raise AmError("usage", "--limit requires a number")
-                try:
-                    limit = int(args[idx + 1])
-                except ValueError:
-                    raise AmError("usage", f"Invalid limit: {args[idx + 1]}")
-                idx += 2
-            else:
-                term_parts.append(args[idx])
-                idx += 1
-        term = " ".join(term_parts)
+    if c == "sync":
+        return handle_sync(only=a.only, no_start=ns)
+    if c == "item":
+        return handle_item(a.kind, a.item_id, no_start=ns)
+    if c == "play":
+        return handle_play(a.kind, a.item_id, start_with=a.start_with, shuffle=a.shuffle, no_start=ns)
+    if c == "play-next":
+        return handle_play_next(a.kind, a.item_id, no_start=ns)
+    if c == "play-later":
+        return handle_play_later(a.kind, a.item_id, no_start=ns)
+    if c == "control":
+        return handle_control(a.action, no_start=ns)
+    if c == "seek":
+        return handle_seek(a.sec, no_start=ns)
+    if c == "volume":
+        return handle_volume(a.val, no_start=ns)
+    if c == "shuffle":
+        return handle_shuffle(a.mode, no_start=ns)
+    if c == "repeat":
+        return handle_repeat(a.mode, no_start=ns)
+    if c == "now-playing":
+        return handle_now_playing(no_start=ns)
+    if c == "queue":
+        return handle_queue(no_start=ns)
+    if c in ("love", "unlove"):
+        return handle_love(a.kind, a.item_id, love=c == "love", no_start=ns)
+    if c == "add-to-library":
+        return handle_add_to_library(a.kind, a.item_id, no_start=ns)
+    if c == "playlists":
+        return handle_playlists(no_start=ns)
+    if c == "add-to-playlist":
+        return handle_add_to_playlist(a.playlist_id, a.song_id, no_start=ns)
+    if c == "lyrics":
+        return handle_lyrics(a.song_id, no_start=ns)
+    if c == "search":
+        term = " ".join(a.term).strip()
         if not term:
             raise AmError("usage", "search requires a search term")
-        return handle_search(term, library=library, limit=limit, no_start=no_start)
-
-    else:
-        raise AmError("usage", f"Unknown command: {cmd}")
+        return handle_search(term, library=a.library, limit=a.limit, no_start=ns)
+    raise AmError("usage", f"Unknown command: {c}")
 
 
 def main():

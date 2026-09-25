@@ -42,17 +42,11 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {run} from './amctl.js';
+import {cacheRemoteArt} from './playerUtil.js';
 
 const MIN_CHARS = 3;
 const RESULT_LIMIT = 12;
 const DEBOUNCE_MS = 250;
-
-// Where a search result's remote catalog artwork (a plain https URL — the
-// only art a fresh, unsynced catalog hit carries; see `_createIcon` below)
-// is cached once fetched, so the same row does not refetch on every
-// keystroke and repeat searches show the icon immediately.
-const SEARCH_ART_CACHE_DIR = GLib.build_filenamev(
-    [GLib.get_home_dir(), '.cache', 'music-menu', 'search-art']);
 
 export class MusicSearchProvider {
     constructor({onActivate}) {
@@ -221,39 +215,12 @@ export class MusicSearchProvider {
             });
     }
 
+    // Catalog artwork is fetched into the same cache the player's cover art
+    // uses (playerUtil.js), so a repeat search shows the icon at once.
     _loadRemoteArt(url, icon, isDestroyed) {
-        try {
-            GLib.mkdir_with_parents(SEARCH_ART_CACHE_DIR, 0o700);
-        } catch {
-            return;
-        }
-        const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, url, -1);
-        const dest = Gio.File.new_for_path(
-            GLib.build_filenamev([SEARCH_ART_CACHE_DIR, `${hash}.jpg`]));
-
-        if (dest.query_exists(null)) {
-            if (!isDestroyed())
-                icon.gicon = Gio.FileIcon.new(dest);
-            return;
-        }
-
-        Gio.File.new_for_uri(url).load_bytes_async(null, (source, res) => {
-            let bytes;
-            try {
-                [bytes] = source.load_bytes_finish(res);
-            } catch {
-                return; // offline, 404, cancelled — keep the symbolic fallback
-            }
-            dest.replace_contents_bytes_async(bytes, null, false,
-                Gio.FileCreateFlags.REPLACE_DESTINATION, null, (destFile, res2) => {
-                    try {
-                        destFile.replace_contents_finish(res2);
-                    } catch {
-                        return;
-                    }
-                    if (!isDestroyed())
-                        icon.gicon = Gio.FileIcon.new(destFile);
-                });
+        cacheRemoteArt(url).then(path => {
+            if (path && !isDestroyed())
+                icon.gicon = Gio.FileIcon.new(Gio.File.new_for_path(path));
         });
     }
 

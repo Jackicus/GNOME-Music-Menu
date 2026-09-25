@@ -192,9 +192,24 @@ class MusicMenuDetailDialog extends MediaPanel {
         super.popup(source);
     }
 
-    // Passed straight through, so app.js can call this on whichever of
+    // Passed straight through, so app.js can call these on whichever of
     // DetailView/DetailDialog is showing the item without asking which.
     setNowPlayingTrack(catalogIdOrId) {
         this._detail.setNowPlayingTrack(catalogIdOrId);
+    }
+
+    get item() {
+        return this.isOpen ? this._item : null;
+    }
+
+    setLoading(loading) {
+        this._detail.setLoading(loading);
+    }
+
+    update(item) {
+        if (!this.isOpen || item?.id !== this._item?.id)
+            return;
+        this._item = item;
+        this._detail.update(item);
     }
 });

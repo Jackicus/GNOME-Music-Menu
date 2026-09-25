@@ -1,5 +1,11 @@
 # Music Menu
 
+> **Work in progress.** This is an early, unfinished extension that I'm
+> building for my own desktop. It runs, signs in, syncs a library and plays
+> music, but expect rough edges, missing pieces and breaking changes between
+> commits. It is not on extensions.gnome.org and there is no release yet.
+> Issues and ideas are welcome; just don't rely on it.
+
 Your Apple Music library as a menu in GNOME, beside Show Apps: Listen Now,
 Albums, Artists, Playlists and Radio, with a player bar and a full Now Playing
 view. No paid app, no developer account — it drives Apple's own web player.
@@ -37,6 +43,23 @@ Two things follow from that:
   supported API, just the one the browser already has.
 - **Audio quality is whatever the web player streams** — 256 kbps AAC, not
   the lossless or Dolby Atmos tiers Apple's native apps can reach.
+
+## What stays on your machine
+
+Nothing about your account is in this repository, and nothing leaves your
+computer except the requests Chrome itself makes to Apple.
+
+- **Your Apple ID session** lives in Chrome's own profile under
+  `~/.local/share/music-menu/chrome`, exactly as a browser login does. Music
+  Menu never sees a password, a cookie or a token; it asks the page's own
+  player to do things.
+- **Your library** is cached as `~/.cache/music-menu/library.json` with its
+  artwork alongside. Delete that folder and the profile above to wipe every
+  trace.
+- **The DevTools port** Chrome listens on is bound to localhost only.
+
+The test fixtures and the demo library in `scripts/demo_library.py` are
+made-up data, not anyone's real collection.
 
 ## Requirements
 

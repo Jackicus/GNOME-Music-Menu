@@ -7,6 +7,7 @@ import GLib from 'gi://GLib';
 import Pango from 'gi://Pango';
 
 import {ACTIONS, NATIVE_KEYS, padLabel} from './lib/actions.js';
+import * as amctl from './lib/amctl.js';
 
 // The one shortcut: the library's button, pressed from the keyboard.
 const SHORTCUT_KEY = 'library-shortcut';
@@ -43,6 +44,8 @@ const REMOTE_KEYS = {
 export default class MusicMenuPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
+        // The same door to am.py the shell side uses (lib/amctl.js).
+        amctl.setExtensionPath(this.path);
         window.set_default_size(720, 640);
         window.set_search_enabled(true);
 
@@ -85,7 +88,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                 title: tab.title,
                 subtitle: tab.subtitle,
             });
-            bindSetting(settings, tab.key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
+            settings.bind(tab.key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
             sectionsGroup.add(row);
         }
 
@@ -122,14 +125,14 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             title: 'Player bar',
             subtitle: 'Show the playback control bar at the bottom of the library view',
         });
-        bindSetting(settings, 'player-bar', playerBarRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('player-bar', playerBarRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         view.add(playerBarRow);
 
         const playRow = new Adw.SwitchRow({
             title: 'Play on a new workspace',
             subtitle: 'The player opens on an empty workspace of its own, leaving the one you picked from as it was',
         });
-        bindSetting(settings, 'play-on-new-workspace', playRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('play-on-new-workspace', playRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         view.add(playRow);
 
         const workspaces = new Adw.ActionRow({
@@ -161,17 +164,13 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                 width_request: 220,
                 valign: Gtk.Align.CENTER,
             });
-            if (settings.settings_schema?.has_key(key)) {
-                scale.add_mark(settings.get_default_value(key).deep_unpack(), Gtk.PositionType.BOTTOM, null);
-                scale.set_value(settings.get_int(key));
-                scale.connect('value-changed', () => settings.set_int(key, Math.round(scale.get_value())));
-                settings.connect(`changed::${key}`, () => {
-                    if (Math.round(scale.get_value()) !== settings.get_int(key))
-                        scale.set_value(settings.get_int(key));
-                });
-            } else {
-                scale.set_value(min);
-            }
+            scale.add_mark(settings.get_default_value(key).deep_unpack(), Gtk.PositionType.BOTTOM, null);
+            scale.set_value(settings.get_int(key));
+            scale.connect('value-changed', () => settings.set_int(key, Math.round(scale.get_value())));
+            settings.connect(`changed::${key}`, () => {
+                if (Math.round(scale.get_value()) !== settings.get_int(key))
+                    scale.set_value(settings.get_int(key));
+            });
             return scale;
         };
 
@@ -192,14 +191,12 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         const align = new Adw.ToggleGroup({valign: Gtk.Align.CENTER, homogeneous: true, can_shrink: false});
         align.add(new Adw.Toggle({name: 'center', label: 'Centre'}));
         align.add(new Adw.Toggle({name: 'start', label: 'Left'}));
-        if (settings.settings_schema?.has_key('grid-align')) {
-            align.set_active_name(settings.get_string('grid-align'));
-            align.connect('notify::active-name', () => settings.set_string('grid-align', align.get_active_name()));
-            settings.connect('changed::grid-align', () => {
-                if (align.get_active_name() !== settings.get_string('grid-align'))
-                    align.set_active_name(settings.get_string('grid-align'));
-            });
-        }
+        align.set_active_name(settings.get_string('grid-align'));
+        align.connect('notify::active-name', () => settings.set_string('grid-align', align.get_active_name()));
+        settings.connect('changed::grid-align', () => {
+            if (align.get_active_name() !== settings.get_string('grid-align'))
+                align.set_active_name(settings.get_string('grid-align'));
+        });
         const alignRow = new Adw.ActionRow({
             title: 'Align covers',
             subtitle: 'Where a row that is not full sits',
@@ -251,10 +248,9 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             menu: 'What you pick pops up where you picked it, the way an app folder opens.',
             modal: 'What you pick opens in a panel over the desktop and stays up until Escape or a click away closes it.',
         };
-        const chosen = key => settings.settings_schema?.has_key(key) ? settings.get_string(key) : 'menu';
         const syncView = () => {
-            const mode = chosen('library-opens-in');
-            const detail = chosen('detail-opens-in');
+            const mode = settings.get_string('library-opens-in');
+            const detail = settings.get_string('detail-opens-in');
             if (modes.active_name !== mode)
                 modes.active_name = mode;
             if (details.active_name !== detail)
@@ -265,11 +261,10 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         };
         for (const [group, key] of [[modes, 'library-opens-in'], [details, 'detail-opens-in']]) {
             group.connect('notify::active-name', () => {
-                if (group.active_name && settings.settings_schema?.has_key(key) && group.active_name !== settings.get_string(key))
+                if (group.active_name && group.active_name !== settings.get_string(key))
                     settings.set_string(key, group.active_name);
             });
-            if (settings.settings_schema?.has_key(key))
-                settings.connect(`changed::${key}`, syncView);
+            settings.connect(`changed::${key}`, syncView);
         }
         syncView();
 
@@ -292,19 +287,15 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             icon_name: 'edit-clear-symbolic', valign: Gtk.Align.CENTER,
             tooltip_text: 'Remove this shortcut', css_classes: ['flat'],
         });
-        clear.connect('clicked', () => {
-            if (settings.settings_schema?.has_key(SHORTCUT_KEY))
-                settings.set_strv(SHORTCUT_KEY, []);
-        });
+        clear.connect('clicked', () => settings.set_strv(SHORTCUT_KEY, []));
         row.add_suffix(label);
         row.add_suffix(clear);
         const sync = () => {
-            const accel = (settings.settings_schema?.has_key(SHORTCUT_KEY) ? settings.get_strv(SHORTCUT_KEY)[0] : '') ?? '';
+            const accel = settings.get_strv(SHORTCUT_KEY)[0] ?? '';
             label.accelerator = accel;
             clear.visible = accel !== '';
         };
-        if (settings.settings_schema?.has_key(SHORTCUT_KEY))
-            settings.connect(`changed::${SHORTCUT_KEY}`, sync);
+        settings.connect(`changed::${SHORTCUT_KEY}`, sync);
         sync();
         row.connect('activated', () => this._captureShortcut(state));
         group.add(row);
@@ -320,8 +311,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                 if (!mods && keyval === Gdk.KEY_Escape)
                     return true;
                 if (!mods && keyval === Gdk.KEY_BackSpace) {
-                    if (settings.settings_schema?.has_key(SHORTCUT_KEY))
-                        settings.set_strv(SHORTCUT_KEY, []);
+                    settings.set_strv(SHORTCUT_KEY, []);
                     return true;
                 }
                 const shown = keyLabel(keyval, mods);
@@ -333,8 +323,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                 const clash = shortcutClash(settings, accel, SHORTCUT_KEY);
                 if (clash)
                     return `${shown} is already taken — ${clash}. Try another, or Esc to cancel.`;
-                if (settings.settings_schema?.has_key(SHORTCUT_KEY))
-                    settings.set_strv(SHORTCUT_KEY, [accel]);
+                settings.set_strv(SHORTCUT_KEY, [accel]);
                 return true;
             },
         });
@@ -410,7 +399,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             refreshBtn.set_sensitive(false);
             statusRow.set_subtitle('Checking…');
             try {
-                const res = await this._runAm(['status']);
+                const res = await amctl.run(['status']);
                 const isRunning = typeof res.engine === 'object' ? !!res.engine?.running : !!res.engine;
                 if (!isRunning) {
                     statusRow.set_subtitle('Engine stopped');
@@ -421,12 +410,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                     statusRow.set_subtitle('Running · Not signed in');
                 }
             } catch (err) {
-                if (err.code === 'engine-down')
-                    statusRow.set_subtitle('Engine stopped');
-                else if (err.code === 'not-signed-in')
-                    statusRow.set_subtitle('Running · Not signed in');
-                else
-                    statusRow.set_subtitle('Engine stopped');
+                statusRow.set_subtitle(err.code === 'not-signed-in' ? 'Running · Not signed in' : 'Engine stopped');
             } finally {
                 refreshBtn.set_sensitive(true);
             }
@@ -446,7 +430,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             signInBtn.set_sensitive(false);
             signInRow.set_subtitle('Waiting for sign in…');
             try {
-                const res = await this._runAm(['signin']);
+                const res = await amctl.run(['signin']);
                 if (res?.authorized)
                     signInRow.set_subtitle('Signed in successfully');
                 else
@@ -469,7 +453,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         });
         page.add(syncGroup);
 
-        const currentSync = (settings.settings_schema?.has_key('last-sync') ? settings.get_string('last-sync') : '') || lastSyncFromCache();
+        const currentSync = settings.get_string('last-sync') || lastSyncFromCache();
         const syncRow = new Adw.ActionRow({
             title: 'Sync library',
             subtitle: formatSyncSubtitle(currentSync),
@@ -485,45 +469,39 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         syncRow.add_suffix(syncBtn);
         syncGroup.add(syncRow);
 
+        // The button says how the sync went for a moment, then is itself again.
+        const showOutcome = (icon, label, seconds) => {
+            syncContent.set_icon_name(icon);
+            syncContent.set_label(label);
+            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {
+                syncContent.set_icon_name('view-refresh-symbolic');
+                syncContent.set_label('Sync Now');
+                return GLib.SOURCE_REMOVE;
+            });
+        };
         syncBtn.connect('clicked', async () => {
             syncBtn.set_sensitive(false);
             syncContent.set_icon_name('content-loading-symbolic');
             syncContent.set_label('Syncing…');
             syncRow.set_subtitle('Syncing library from Apple Music…');
-
             try {
-                const res = await this._runAm(['sync']);
+                const res = await amctl.run(['sync']);
                 const nowIso = res?.generated || new Date().toISOString();
-                if (settings.settings_schema?.has_key('last-sync'))
-                    settings.set_string('last-sync', nowIso);
+                settings.set_string('last-sync', nowIso);
                 syncRow.set_subtitle(formatSyncSubtitle(nowIso, res?.counts));
-                syncContent.set_icon_name('emblem-ok-symbolic');
-                syncContent.set_label('Synced');
-                GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
-                    syncContent.set_icon_name('view-refresh-symbolic');
-                    syncContent.set_label('Sync Now');
-                    return GLib.SOURCE_REMOVE;
-                });
+                showOutcome('emblem-ok-symbolic', 'Synced', 2);
             } catch (err) {
                 console.error(`[Music Menu] Sync failed: ${err.message}`);
                 syncRow.set_subtitle(`Sync failed: ${err.message}`);
-                syncContent.set_icon_name('dialog-warning-symbolic');
-                syncContent.set_label('Failed');
-                GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
-                    syncContent.set_icon_name('view-refresh-symbolic');
-                    syncContent.set_label('Sync Now');
-                    return GLib.SOURCE_REMOVE;
-                });
+                showOutcome('dialog-warning-symbolic', 'Failed', 3);
             } finally {
                 syncBtn.set_sensitive(true);
             }
         });
 
-        if (settings.settings_schema?.has_key('last-sync')) {
-            settings.connect('changed::last-sync', () => {
-                syncRow.set_subtitle(formatSyncSubtitle(settings.get_string('last-sync')));
-            });
-        }
+        settings.connect('changed::last-sync', () => {
+            syncRow.set_subtitle(formatSyncSubtitle(settings.get_string('last-sync')));
+        });
 
         const intervalAdjustment = new Gtk.Adjustment({
             lower: 0,
@@ -531,35 +509,13 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             step_increment: 5,
             page_increment: 60,
         });
-        let syncIntervalWidget;
-        if (Adw.SpinRow) {
-            const spinRow = new Adw.SpinRow({
-                title: 'Sync interval',
-                subtitle: 'Minutes between automatic syncs (0 to disable)',
-                adjustment: intervalAdjustment,
-            });
-            if (settings.settings_schema?.has_key('sync-interval'))
-                settings.bind('sync-interval', spinRow, 'value', Gio.SettingsBindFlags.DEFAULT);
-            else
-                spinRow.set_value(60);
-            syncIntervalWidget = spinRow;
-        } else {
-            const row = new Adw.ActionRow({
-                title: 'Sync interval',
-                subtitle: 'Minutes between automatic syncs (0 to disable)',
-            });
-            const spin = new Gtk.SpinButton({
-                adjustment: intervalAdjustment,
-                valign: Gtk.Align.CENTER,
-            });
-            if (settings.settings_schema?.has_key('sync-interval'))
-                settings.bind('sync-interval', spin, 'value', Gio.SettingsBindFlags.DEFAULT);
-            else
-                spin.set_value(60);
-            row.add_suffix(spin);
-            syncIntervalWidget = row;
-        }
-        syncGroup.add(syncIntervalWidget);
+        const intervalRow = new Adw.SpinRow({
+            title: 'Sync interval',
+            subtitle: 'Minutes between automatic syncs (0 to disable)',
+            adjustment: intervalAdjustment,
+        });
+        settings.bind('sync-interval', intervalRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        syncGroup.add(intervalRow);
 
         // --------------------------------------------------------------
         // Engine Settings
@@ -573,29 +529,16 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         const browserRow = new Adw.EntryRow({
             title: 'Browser command',
             show_apply_button: true,
-            tooltip_text: 'Google Chrome executable (google-chrome-stable)',
+            tooltip_text: 'The Google Chrome executable (google-chrome-stable): it has to support Widevine and the DevTools protocol',
         });
-        if (settings.settings_schema?.has_key('browser-command')) {
-            browserRow.set_text(settings.get_string('browser-command'));
-            browserRow.connect('apply', () => {
-                settings.set_string('browser-command', browserRow.get_text().trim());
-            });
-            settings.connect('changed::browser-command', () => {
-                const val = settings.get_string('browser-command');
-                if (browserRow.get_text().trim() !== val)
-                    browserRow.set_text(val);
-            });
-        } else {
-            browserRow.set_text('google-chrome-stable');
-        }
+        browserRow.set_text(settings.get_string('browser-command'));
+        browserRow.connect('apply', () => settings.set_string('browser-command', browserRow.get_text().trim()));
+        settings.connect('changed::browser-command', () => {
+            const val = settings.get_string('browser-command');
+            if (browserRow.get_text().trim() !== val)
+                browserRow.set_text(val);
+        });
         engineGroup.add(browserRow);
-
-        const browserDescRow = new Adw.ActionRow({
-            title: 'Google Chrome executable (google-chrome-stable)',
-            subtitle: 'Must support Widevine and the DevTools protocol (CDP)',
-            sensitive: false,
-        });
-        engineGroup.add(browserDescRow);
 
         const portAdjustment = new Gtk.Adjustment({
             lower: 1024,
@@ -603,54 +546,26 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             step_increment: 1,
             page_increment: 100,
         });
-        let portWidget;
-        if (Adw.SpinRow) {
-            const portRow = new Adw.SpinRow({
-                title: 'Port',
-                subtitle: 'Remote debugging port bound to 127.0.0.1',
-                adjustment: portAdjustment,
-            });
-            if (settings.settings_schema?.has_key('engine-port'))
-                settings.bind('engine-port', portRow, 'value', Gio.SettingsBindFlags.DEFAULT);
-            else
-                portRow.set_value(9227);
-            portWidget = portRow;
-        } else {
-            const row = new Adw.ActionRow({
-                title: 'Port',
-                subtitle: 'Remote debugging port bound to 127.0.0.1',
-            });
-            const spin = new Gtk.SpinButton({
-                adjustment: portAdjustment,
-                valign: Gtk.Align.CENTER,
-            });
-            if (settings.settings_schema?.has_key('engine-port'))
-                settings.bind('engine-port', spin, 'value', Gio.SettingsBindFlags.DEFAULT);
-            else
-                spin.set_value(9227);
-            row.add_suffix(spin);
-            portWidget = row;
-        }
-        engineGroup.add(portWidget);
+        const portRow = new Adw.SpinRow({
+            title: 'Port',
+            subtitle: 'Remote debugging port bound to 127.0.0.1',
+            adjustment: portAdjustment,
+        });
+        settings.bind('engine-port', portRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        engineGroup.add(portRow);
 
         const headlessRow = new Adw.SwitchRow({
             title: 'Run headless',
             subtitle: 'Run Chrome in the background without a window',
         });
-        if (settings.settings_schema?.has_key('engine-headless'))
-            settings.bind('engine-headless', headlessRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        else
-            headlessRow.set_active(true);
+        settings.bind('engine-headless', headlessRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         engineGroup.add(headlessRow);
 
         const autostartRow = new Adw.SwitchRow({
             title: 'Start engine automatically',
             subtitle: 'Start the engine when the library opens',
         });
-        if (settings.settings_schema?.has_key('engine-autostart'))
-            settings.bind('engine-autostart', autostartRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        else
-            autostartRow.set_active(true);
+        settings.bind('engine-autostart', autostartRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         engineGroup.add(autostartRow);
 
         // Check engine status when preferences open
@@ -671,20 +586,16 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             description: 'The arrow keys, Enter and Escape always work. Add the keys a remote, a Pico or anything else that acts as a keyboard sends: they do these things while a library is on screen, and what they always did everywhere else.',
         });
         page.add(keys);
-        const pairs = action => {
-            const key = schemaKey(settings, 'keys', action.key);
-            return settings.settings_schema?.has_key(key) ? settings.get_value(key).deep_unpack() : [];
-        };
         for (const action of ACTIONS) {
-            const key = schemaKey(settings, 'keys', action.key);
+            const key = `keys-${action.key}`;
             keys.add(this._bindingRow(settings, action, {
                 key,
-                labels: () => pairs(action).map(([keyval, mods]) => keyLabel(keyval, mods)),
+                labels: () => settings.get_value(key).deep_unpack().map(([keyval, mods]) => keyLabel(keyval, mods)),
                 add: () => this._captureNavKey(state, action),
                 addTip: 'Add a key',
             }));
         }
-        keys.add(this._resetRow(settings, ACTIONS.map(a => schemaKey(settings, 'keys', a.key))));
+        keys.add(this._resetRow(settings, ACTIONS.map(a => `keys-${a.key}`)));
 
         const pads = new Adw.PreferencesGroup({
             title: 'Game Controller',
@@ -692,26 +603,24 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         });
         page.add(pads);
         const use = new Adw.SwitchRow({title: 'Use game controllers'});
-        bindSetting(settings, 'gamepad-enabled', use, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('gamepad-enabled', use, 'active', Gio.SettingsBindFlags.DEFAULT);
         pads.add(use);
         const connected = new Adw.ActionRow({title: 'Connected', subtitle: 'Looking…'});
         pads.add(connected);
         const padRows = [connected];
         for (const action of ACTIONS) {
-            const key = schemaKey(settings, 'pad', action.key);
+            const key = `pad-${action.key}`;
             padRows.push(this._bindingRow(settings, action, {
                 key,
-                labels: () => settings.settings_schema?.has_key(key)
-                    ? [...new Set(settings.get_strv(key).map(padLabel))]
-                    : [],
+                labels: () => [...new Set(settings.get_strv(key).map(padLabel))],
                 subtitle: action.subtitle ?? null,
                 add: () => this._capturePad(state, action),
                 addTip: 'Add a button',
             }));
         }
-        padRows.push(this._resetRow(settings, ACTIONS.map(a => schemaKey(settings, 'pad', a.key))));
+        padRows.push(this._resetRow(settings, ACTIONS.map(a => `pad-${a.key}`)));
         for (const row of padRows) {
-            bindSetting(settings, 'gamepad-enabled', row, 'sensitive', Gio.SettingsBindFlags.GET);
+            settings.bind('gamepad-enabled', row, 'sensitive', Gio.SettingsBindFlags.GET);
             if (row !== connected)
                 pads.add(row);
         }
@@ -740,10 +649,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         });
         addButton.connect('clicked', add);
         clear.connect('clicked', () => {
-            if (settings.settings_schema?.has_key(key)) {
-                settings.set_value(key,
-                    new GLib.Variant(settings.get_value(key).get_type_string(), []));
-            }
+            settings.set_value(key, new GLib.Variant(settings.get_value(key).get_type_string(), []));
         });
         row.add_suffix(shown);
         row.add_suffix(addButton);
@@ -755,8 +661,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             shown.tooltip_text = names.join(', ');
             clear.sensitive = names.length > 0;
         };
-        if (settings.settings_schema?.has_key(key))
-            settings.connect(`changed::${key}`, sync);
+        settings.connect(`changed::${key}`, sync);
         sync();
         return row;
     }
@@ -764,19 +669,14 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
     _resetRow(settings, keys) {
         const row = new Adw.ActionRow({title: 'Put back the defaults'});
         const button = new Gtk.Button({label: 'Reset', valign: Gtk.Align.CENTER});
-        button.connect('clicked', () => {
-            keys.forEach(key => {
-                if (settings.settings_schema?.has_key(key))
-                    settings.reset(key);
-            });
-        });
+        button.connect('clicked', () => keys.forEach(key => settings.reset(key)));
         row.add_suffix(button);
         return row;
     }
 
     _captureNavKey(state, action) {
         const {settings} = state;
-        const key = schemaKey(settings, 'keys', action.key);
+        const key = `keys-${action.key}`;
         const matches = (keyval, mods) => ([k, m]) => k === keyval && m === mods;
         this._keyDialog(state, {
             heading: 'Add a Key',
@@ -789,25 +689,17 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
                 const shown = keyLabel(keyval, mods);
                 if (!mods && NATIVE_KEYS.some(name => Gdk[`KEY_${name}`] === keyval))
                     return `${shown} already works in every library. Press another key, or Esc to cancel.`;
-                const bound = settings.settings_schema?.has_key(key)
-                    ? settings.get_value(key).deep_unpack()
-                    : [];
+                const bound = settings.get_value(key).deep_unpack();
                 if (bound.some(matches(keyval, mods)))
                     return true;
-                const owner = ACTIONS.find(other => {
-                    if (other === action)
-                        return false;
-                    const otherKey = schemaKey(settings, 'keys', other.key);
-                    return settings.settings_schema?.has_key(otherKey) &&
-                        settings.get_value(otherKey).deep_unpack().some(matches(keyval, mods));
-                });
+                const owner = ACTIONS.find(other => other !== action &&
+                    settings.get_value(`keys-${other.key}`).deep_unpack().some(matches(keyval, mods)));
                 if (owner)
                     return `${shown} is already ${owner.title}. Press another key, or Esc to cancel.`;
                 const clash = shortcutClash(settings, Gtk.accelerator_name(keyval, mods), null);
                 if (clash)
                     return `${shown} is taken by the system — ${clash} — and would never reach the library.`;
-                if (settings.settings_schema?.has_key(key))
-                    settings.set_value(key, new GLib.Variant('a(uu)', [...bound, [keyval, mods]]));
+                settings.set_value(key, new GLib.Variant('a(uu)', [...bound, [keyval, mods]]));
                 return true;
             },
         });
@@ -815,7 +707,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
 
     async _capturePad(state, action) {
         const {settings, window} = state;
-        const key = schemaKey(settings, 'pad', action.key);
+        const key = `pad-${action.key}`;
         const status = new Adw.StatusPage({
             icon_name: 'input-gaming-symbolic',
             title: action.title,
@@ -836,24 +728,18 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         const listen = (object, signal, handler) => handlers.push([object, object.connect(signal, handler)]);
         const rest = new Map();
         const take = input => {
-            const bound = settings.settings_schema?.has_key(key) ? settings.get_strv(key) : [];
+            const bound = settings.get_strv(key);
             if (bound.includes(input)) {
                 dialog.close();
                 return;
             }
-            const owner = ACTIONS.find(other => {
-                if (other === action)
-                    return false;
-                const otherKey = schemaKey(settings, 'pad', other.key);
-                return settings.settings_schema?.has_key(otherKey) &&
-                    settings.get_strv(otherKey).includes(input);
-            });
+            const owner = ACTIONS.find(other => other !== action &&
+                settings.get_strv(`pad-${other.key}`).includes(input));
             if (owner) {
                 status.description = `${padLabel(input)} is already ${owner.title}. Press another, or Esc to cancel.`;
                 return;
             }
-            if (settings.settings_schema?.has_key(key))
-                settings.set_strv(key, [...bound, input]);
+            settings.set_strv(key, [...bound, input]);
             dialog.close();
         };
         const axis = (device, code, value, hat) => {
@@ -921,78 +807,11 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
             add(device);
         sync();
     }
-
-    // ------------------------------------------------------------------
-    // Backend am.py runner
-    // ------------------------------------------------------------------
-    async _runAm(args) {
-        const script = GLib.build_filenamev([this.path, 'backend', 'am.py']);
-        if (!GLib.file_test(script, GLib.FileTest.EXISTS))
-            throw new Error(`am.py not found at ${script}`);
-
-        return new Promise((resolve, reject) => {
-            let proc;
-            try {
-                proc = Gio.Subprocess.new(
-                    ['python3', script, ...args.map(String)],
-                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
-                );
-            } catch (e) {
-                reject(new Error(`Failed to run am.py: ${e.message}`));
-                return;
-            }
-
-            proc.communicate_utf8_async(null, null, (p, res) => {
-                let stdout, stderr;
-                try {
-                    [, stdout, stderr] = p.communicate_utf8_finish(res);
-                } catch (e) {
-                    reject(new Error(`communicate error: ${e.message}`));
-                    return;
-                }
-
-                let json = null;
-                const outStr = (stdout ?? '').trim();
-                if (outStr) {
-                    const lastLine = outStr.split('\n').pop();
-                    try {
-                        json = JSON.parse(lastLine);
-                    } catch {
-                        // Not JSON
-                    }
-                }
-
-                if (p.get_successful() && json && !json.error) {
-                    resolve(json);
-                    return;
-                }
-
-                const errCode = json?.error ?? (p.get_successful() ? 'parse-error' : 'crash');
-                const errMsg = json?.message ?? (stderr ?? '').trim().split('\n').pop() ?? 'am.py failed';
-                const err = new Error(errMsg);
-                err.code = errCode;
-                reject(err);
-            });
-        });
-    }
 }
 
 // ----------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------
-
-function bindSetting(settings, key, object, property, flags = Gio.SettingsBindFlags.DEFAULT) {
-    if (settings.settings_schema?.has_key(key)) {
-        settings.bind(key, object, property, flags);
-    } else {
-        if (property === 'active')
-            object.active = true;
-    }
-}
-
-function schemaKey(settings, prefix, actionKey) {
-    return `${prefix}-${actionKey}`;
-}
 
 function formatSyncSubtitle(lastSyncStr, counts = null) {
     let dateStr = '';
@@ -1045,14 +864,11 @@ function shortcutClash(settings, accel, ownKey) {
     const wanted = normal(accel);
     const source = Gio.SettingsSchemaSource.get_default();
 
-    if (SHORTCUT_KEY !== ownKey && settings.settings_schema?.has_key(SHORTCUT_KEY) && settings.get_strv(SHORTCUT_KEY).some(a => normal(a) === wanted))
+    if (SHORTCUT_KEY !== ownKey && settings.get_strv(SHORTCUT_KEY).some(a => normal(a) === wanted))
         return 'Open the library';
 
     for (const action of ACTIONS) {
-        const key = schemaKey(settings, 'keys', action.key);
-        if (!settings.settings_schema?.has_key(key))
-            continue;
-        const pairs = settings.get_value(key).deep_unpack();
+        const pairs = settings.get_value(`keys-${action.key}`).deep_unpack();
         if (pairs.some(([keyval, mods]) => normal(Gtk.accelerator_name(keyval, mods)) === wanted))
             return `${action.title}, on the Controls page`;
     }

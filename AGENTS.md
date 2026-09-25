@@ -184,7 +184,8 @@ src/extension.js             stages lib/ and imports app.js (unchanged mechanism
 src/lib/app.js               owns everything; wires library, player, surface
 src/lib/library.js           SECTIONS (listen-now, albums, artists, playlists, radio), loadLibrary()
 src/lib/amctl.js             THE ONLY way JS talks to am.py (async spawn + JSON). Contract, see file.
-src/lib/player.js            Player: follows the engine's MPRIS player, emits 'changed'; transport via MPRIS
+src/lib/player.js            Player: follows the engine's MPRIS player (Gio.DBusProxy wrappers, as ui/mpris.js), emits 'changed'; transport via MPRIS
+src/lib/playerWidgets.js     Transport (⏮ ⏯ ⏭ + shuffle/repeat + scrubber) and remote cover art, shared by the bar and Now Playing
 src/lib/playerBar.js         the player bar widget (art, title/artist, ⏮ ⏯ ⏭, scrubber, time)
 src/lib/nowPlaying.js        full now-playing view: big art, lyrics, Up Next queue
 src/lib/shelfView.js         Listen Now: vertical list of horizontal shelves of tiles

@@ -248,7 +248,22 @@ class Shelf {
         this._gridBox.hide();
         this.actor.add_child(this._gridBox);
 
+        // The page that holds a shelf is rebuilt by destroying its actor
+        // (libraryView.js `_measureFooter`), not through ShelfView.destroy(),
+        // so the idle that is still filling this shelf has to go with the
+        // actor or it appends its next batch into a disposed box.
+        this._idleSource = 0;
+        this.actor.connect('destroy', () => this._stopFilling());
+
         this._buildInitial();
+    }
+
+    _stopFilling() {
+        if (!this._idleSource)
+            return;
+        GLib.source_remove(this._idleSource);
+        this._idleSources.delete(this._idleSource);
+        this._idleSource = 0;
     }
 
     get firstTile() {
@@ -270,9 +285,11 @@ class Shelf {
                 return GLib.SOURCE_CONTINUE;
             }
             this._idleSources.delete(source);
+            this._idleSource = 0;
             return GLib.SOURCE_REMOVE;
         };
         const source = GLib.idle_add(GLib.PRIORITY_LOW, step);
+        this._idleSource = source;
         this._idleSources.add(source);
     }
 
@@ -340,6 +357,7 @@ export class ShelfView {
         }
 
         global.focus_manager.add_group(this._list);
+        this._scroll.connect('destroy', () => this._release());
 
         this._shelves = shelves
             .filter(shelf => shelf.items?.length)
@@ -362,11 +380,24 @@ export class ShelfView {
         return true;
     }
 
-    destroy() {
+    // Once, whether through destroy() or the actor going on its own.
+    _release() {
+        if (this._released)
+            return;
+        this._released = true;
+        // Through the shelves, so each forgets its own source: the actor's
+        // destroy handlers run before its children go, and a shelf that
+        // still held an id would remove it a second time.
+        for (const shelf of this._shelves)
+            shelf._stopFilling();
         for (const source of this._idleSources)
             GLib.source_remove(source);
         this._idleSources.clear();
         global.focus_manager.remove_group(this._list);
+    }
+
+    destroy() {
+        this._release();
         this._scroll.destroy();
     }
 }

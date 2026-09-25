@@ -1,77 +1,39 @@
 // The player bar: a compact, centred card under a library's tabs
 // (libraryView's footer slot; the CSS width caps it to the grid's own block
-// rather than the full screen), always the same three widgets —
-// art/title/artist on the left, transport and a scrubber in the middle —
-// whatever the engine is doing. It shrinks (`mm-player-bar-compact`) when
-// there is no track, since the left zone and the whole centre column are
-// hidden then and there is nothing left to make 64px of room for. Nothing
-// here talks to MPRIS directly: everything reads Player's
-// `state` and its 'changed'/'position' signals, and every action either
-// calls back into Player (which knows the MPRIS fallbacks) or fires an
-// am.py command straight off, exactly as the shuffle/repeat buttons do.
+// rather than the full screen). Art, title and artist on the left, clickable
+// through to Now Playing, and the shared transport and scrubber
+// (playerWidgets.js) in the middle. With no track it shrinks
+// (`mm-player-bar-compact`) to a "Not Playing" line — or a Start button when
+// the engine itself is down, which is polled for while nothing plays.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
-
 import * as amctl from './amctl.js';
-import {createIconButton, createLabel} from './widgets.js';
-import {formatTime, cacheRemoteArt} from './playerUtil.js';
+import {createLabel} from './widgets.js';
+import {Transport, createRemoteArt} from './playerWidgets.js';
 
-// How often to re-poll `engine status` while nothing is playing, to notice
-// the engine coming up (or going down) without the user touching anything.
+// How often to ask `engine status` while nothing is playing, to notice the
+// engine coming up (or going down) without the user touching anything.
 const ENGINE_POLL_MS = 8000;
-
-function artStyle(path) {
-    return `background-image: url("file://${encodeURI(path)}"); background-size: cover;`;
-}
 
 export class PlayerBar {
     constructor({player, onOpenNowPlaying}) {
         this._player = player;
-        this._onOpenNowPlaying = onOpenNowPlaying;
-        this._destroyed = false;
+        this._engineRunning = null;   // null: not asked yet
+        this._engineTimer = 0;
 
-        this._cancellable = new Gio.Cancellable();
-        this._artCancellable = null;
-        this._artUrl = null;
-
-        this._scrubbing = false;
-        this._length = 0;
-
-        this._engineRunning = null; // null = unknown yet
-        this._engineCheckId = 0;
-
-        this._buildActor();
-
-        this._changedId = player.connect('changed', () => this._render());
-        this._positionId = player.connect('position', (_player, posUs) => this._onPosition(posUs));
-
-        this._render();
-    }
-
-    get actor() {
-        return this._actor;
-    }
-
-    // ------------------------------------------------------------------
-    // Construction
-    // ------------------------------------------------------------------
-    _buildActor() {
         // Not `x_expand`/FILL: a plain BoxLayout child of libraryView's
         // vertical box defaults to filling the full width, which is what
         // made this a full-width strip. CENTER instead sizes it to its own
         // CSS `width` (a compact card) and centres that under the grid.
-        this._actor = new St.BoxLayout({
+        this.actor = new St.BoxLayout({
             style_class: 'mm-player-bar',
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        // Left: art + title/artist, clickable through to Now Playing.
         this._left = new St.Button({
             style_class: 'mm-player-bar-left',
             can_focus: true,
@@ -79,16 +41,10 @@ export class PlayerBar {
             y_align: Clutter.ActorAlign.CENTER,
             accessible_name: 'Now Playing',
         });
-        this._left.connect('clicked', () => this._onOpenNowPlaying?.());
-        const leftContent = new St.BoxLayout({y_align: Clutter.ActorAlign.CENTER});
-        this._art = new St.Widget({
-            style_class: 'mm-player-bar-art',
-            layout_manager: new Clutter.BinLayout(),
-            width: 40,
-            height: 40,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        leftContent.add_child(this._art);
+        this._left.connect('clicked', () => onOpenNowPlaying?.());
+        const left = new St.BoxLayout({y_align: Clutter.ActorAlign.CENTER});
+        this._art = createRemoteArt({styleClass: 'mm-player-bar-art', size: 40});
+        left.add_child(this._art);
         const meta = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             style_class: 'mm-player-bar-meta',
@@ -98,16 +54,16 @@ export class PlayerBar {
         this._artist = createLabel('', 'mm-player-bar-artist');
         meta.add_child(this._title);
         meta.add_child(this._artist);
-        leftContent.add_child(meta);
-        this._left.set_child(leftContent);
+        left.add_child(meta);
+        this._left.set_child(left);
+        this.actor.add_child(this._left);
 
-        // Shown instead of the left zone when nothing is playing.
         this._empty = createLabel('Not Playing', 'mm-player-bar-empty', {
             x_expand: true, x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER,
         });
+        this.actor.add_child(this._empty);
 
-        // Shown instead of the left zone when the engine itself is down.
-        this._startButton = new St.Button({
+        this._start = new St.Button({
             style_class: 'button default mm-player-bar-start',
             label: 'Start Apple Music',
             can_focus: true,
@@ -116,273 +72,90 @@ export class PlayerBar {
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        this._startButton.connect('clicked', () => this._startEngine());
+        this._start.connect('clicked', () => this._startEngine());
+        this.actor.add_child(this._start);
 
-        this._actor.add_child(this._left);
-        this._actor.add_child(this._empty);
-        this._actor.add_child(this._startButton);
+        this._transport = new Transport({player, prefix: 'mm-player-bar'});
+        this._transport.actor.add_style_class_name('mm-player-bar-center');
+        this.actor.add_child(this._transport.actor);
 
-        // Center: transport row above a scrubber row.
-        this._center = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'mm-player-bar-center',
-            x_expand: true,
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-
-        const transport = new St.BoxLayout({style_class: 'mm-player-bar-transport', x_align: Clutter.ActorAlign.CENTER});
-        this._shuffleBtn = createIconButton('media-playlist-shuffle-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Shuffle'});
-        this._prevBtn = createIconButton('media-skip-backward-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Previous'});
-        this._playBtn = createIconButton('media-playback-start-symbolic', {styleClass: 'icon-button mm-player-bar-play', accessibleName: 'Play'});
-        this._nextBtn = createIconButton('media-skip-forward-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Next'});
-        this._repeatBtn = createIconButton('media-playlist-repeat-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Repeat'});
-        // A horizontal box stretches its children to its height, which pulls
-        // these round icon-buttons into pills; keep them their natural square.
-        for (const btn of [this._shuffleBtn, this._prevBtn, this._nextBtn, this._repeatBtn])
-            btn.y_align = Clutter.ActorAlign.CENTER;
-        this._shuffleBtn.connect('clicked', () => this._toggleShuffle());
-        this._prevBtn.connect('clicked', () => this._player.previous());
-        this._playBtn.connect('clicked', () => this._player.playPause());
-        this._nextBtn.connect('clicked', () => this._player.next());
-        this._repeatBtn.connect('clicked', () => this._cycleRepeat());
-        for (const button of [this._shuffleBtn, this._prevBtn, this._playBtn, this._nextBtn, this._repeatBtn])
-            transport.add_child(button);
-        this._center.add_child(transport);
-
-        const scrubberRow = new St.BoxLayout({style_class: 'mm-player-bar-scrubber', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
-        this._elapsed = new St.Label({style_class: 'mm-player-bar-time', text: '0:00'});
-        this._slider = new Slider(0);
-        this._slider.x_expand = true;
-        this._slider.connect('drag-begin', () => {
-            this._scrubbing = true;
-        });
-        this._slider.connect('drag-end', () => {
-            this._scrubbing = false;
-            this._commitSeek();
-        });
-        this._slider.connect('notify::value', () => this._onSliderValue());
-        this._remaining = new St.Label({style_class: 'mm-player-bar-time', text: '0:00'});
-        scrubberRow.add_child(this._elapsed);
-        scrubberRow.add_child(this._slider);
-        scrubberRow.add_child(this._remaining);
-        this._center.add_child(scrubberRow);
-
-        this._actor.add_child(this._center);
+        player.connectObject('changed', () => this._render(), this);
+        this._render();
     }
 
-    // ------------------------------------------------------------------
-    // Rendering
-    // ------------------------------------------------------------------
     _render() {
-        if (this._destroyed)
-            return;
-
-        const state = this._player.state;
-        const track = state.track;
-        this._length = track?.lengthUs || 0;
-
+        const track = this._player.state.track;
         this._left.visible = !!track;
-        this._center.visible = !!track;
-        // The compact height (stylesheet.css): with no track there is no art,
-        // title/artist or transport row to make 64px of room for.
-        if (track)
-            this._actor.remove_style_class_name('mm-player-bar-compact');
-        else
-            this._actor.add_style_class_name('mm-player-bar-compact');
-        if (!track) {
-            this._empty.visible = this._engineRunning !== false;
-            this._startButton.visible = this._engineRunning === false;
-            this._scheduleEngineCheck();
-            return;
-        }
-
-        this._stopEngineCheck();
-        this._empty.hide();
-        this._startButton.hide();
-
-        this._title.text = track.title || '';
-        this._artist.text = track.artist || '';
-        this._updateArt(track.artUrl);
-
-        const playing = state.status === 'Playing';
-        this._playBtn.icon_name = playing ? 'media-playback-pause-symbolic' : 'media-playback-start-symbolic';
-        this._playBtn.accessible_name = playing ? 'Pause' : 'Play';
-        this._prevBtn.reactive = !!state.canPrevious;
-        this._nextBtn.reactive = !!state.canNext;
-        this._slider.reactive = !!state.canSeek && this._length > 0;
-
-        this._shuffleBtn.checked = !!state.shuffle;
-        this._repeatBtn.checked = state.repeat !== 'none';
-        this._repeatBtn.icon_name = state.repeat === 'one'
-            ? 'media-playlist-repeat-song-symbolic'
-            : 'media-playlist-repeat-symbolic';
-
-        if (!this._scrubbing)
-            this._updatePosition(state.positionUs);
-    }
-
-    _onPosition(posUs) {
-        if (this._destroyed || this._scrubbing)
-            return;
-        this._updatePosition(posUs);
-    }
-
-    _updatePosition(posUs) {
-        this._slider.value = this._length > 0 ? Math.min(1, Math.max(0, posUs / this._length)) : 0;
-        this._setTimeLabels(posUs);
-    }
-
-    _setTimeLabels(posUs) {
-        const posSec = posUs / 1e6;
-        this._elapsed.text = formatTime(posSec);
-        this._remaining.text = this._length > 0 ? formatTime(posSec - this._length / 1e6) : '0:00';
-    }
-
-    _onSliderValue() {
-        // Live feedback while the user is actually dragging; the seek itself
-        // only fires once, on release (_commitSeek), so a fast drag does not
-        // flood the engine with seeks.
-        if (!this._scrubbing)
-            return;
-        this._setTimeLabels(this._slider.value * this._length);
-    }
-
-    _commitSeek() {
-        if (this._length <= 0)
-            return;
-        this._player.seek(Math.round(this._slider.value * this._length));
-    }
-
-    _updateArt(url) {
-        if (url === this._artUrl)
-            return;
-        this._artUrl = url;
-        this._artCancellable?.cancel();
-        this._art.set_style('');
-        if (!url)
-            return;
-
-        this._artCancellable = new Gio.Cancellable();
-        const cancellable = this._artCancellable;
-        cacheRemoteArt(url, cancellable).then(path => {
-            if (this._destroyed || cancellable.is_cancelled() || this._artUrl !== url || !path)
-                return;
-            this._art.set_style(artStyle(path));
-        });
-    }
-
-    // ------------------------------------------------------------------
-    // Shuffle / repeat / engine actions
-    // ------------------------------------------------------------------
-    async _toggleShuffle() {
-        this._shuffleBtn.reactive = false;
-        try {
-            const res = await amctl.run(['shuffle', 'toggle'], {cancellable: this._cancellable});
-            if (res && typeof res.shuffle === 'boolean')
-                this._shuffleBtn.checked = res.shuffle;
-        } catch (e) {
-            console.warn(`[Music Menu] PlayerBar shuffle toggle failed: ${e.message}`);
-        } finally {
-            if (!this._destroyed)
-                this._shuffleBtn.reactive = true;
+        this._transport.actor.visible = !!track;
+        if (track) {
+            this.actor.remove_style_class_name('mm-player-bar-compact');
+            this._stopEnginePoll();
+            this._empty.hide();
+            this._start.hide();
+            this._title.text = track.title;
+            this._artist.text = track.artist;
+            this._art.setUrl(track.artUrl);
+        } else {
+            this.actor.add_style_class_name('mm-player-bar-compact');
+            this._showEngineState();
+            this._startEnginePoll();
         }
     }
 
-    async _cycleRepeat() {
-        this._repeatBtn.reactive = false;
-        try {
-            const res = await amctl.run(['repeat', 'cycle'], {cancellable: this._cancellable});
-            if (res && res.repeat) {
-                let rep = String(res.repeat).toLowerCase();
-                if (rep === 'off')
-                    rep = 'none';
-                this._repeatBtn.checked = rep !== 'none';
-                this._repeatBtn.icon_name = rep === 'one'
-                    ? 'media-playlist-repeat-song-symbolic'
-                    : 'media-playlist-repeat-symbolic';
-            }
-        } catch (e) {
-            console.warn(`[Music Menu] PlayerBar repeat cycle failed: ${e.message}`);
-        } finally {
-            if (!this._destroyed)
-                this._repeatBtn.reactive = true;
-        }
-    }
-
-    async _startEngine() {
-        this._startButton.reactive = false;
-        this._startButton.label = 'Starting…';
-        try {
-            await amctl.run(['engine', 'start'], {cancellable: this._cancellable});
-        } catch (e) {
-            console.warn(`[Music Menu] engine start failed: ${e.message}`);
-        } finally {
-            if (!this._destroyed) {
-                this._startButton.reactive = true;
-                this._startButton.label = 'Start Apple Music';
-                this._checkEngine();
-            }
-        }
+    _showEngineState() {
+        this._empty.visible = this._engineRunning !== false;
+        this._start.visible = this._engineRunning === false;
     }
 
     async _checkEngine() {
-        if (this._destroyed)
-            return;
         try {
-            const res = await amctl.run(['engine', 'status'], {cancellable: this._cancellable});
-            if (this._destroyed)
-                return;
-            this._engineRunning = !!res?.running;
+            const res = await amctl.run(['engine', 'status']);
+            this._engineRunning = !!res.running;
         } catch {
-            if (this._destroyed)
-                return;
             this._engineRunning = false;
         }
-        if (!this._player.state.track) {
-            this._empty.visible = this._engineRunning !== false;
-            this._startButton.visible = this._engineRunning === false;
-        }
+        if (!this._destroyed && !this._player.state.track)
+            this._showEngineState();
     }
 
-    _scheduleEngineCheck() {
-        if (this._engineCheckId || this._destroyed)
+    async _startEngine() {
+        this._start.reactive = false;
+        this._start.label = 'Starting…';
+        try {
+            await amctl.run(['engine', 'start']);
+        } catch {
+            // Logged by amctl; the status check below shows the outcome.
+        }
+        if (this._destroyed)
+            return;
+        this._start.reactive = true;
+        this._start.label = 'Start Apple Music';
+        this._checkEngine();
+    }
+
+    _startEnginePoll() {
+        if (this._engineTimer)
             return;
         this._checkEngine();
-        this._engineCheckId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ENGINE_POLL_MS, () => {
-            if (this._destroyed || this._player.state.track) {
-                this._engineCheckId = 0;
-                return GLib.SOURCE_REMOVE;
-            }
+        this._engineTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ENGINE_POLL_MS, () => {
             this._checkEngine();
             return GLib.SOURCE_CONTINUE;
         });
     }
 
-    _stopEngineCheck() {
-        if (this._engineCheckId) {
-            GLib.source_remove(this._engineCheckId);
-            this._engineCheckId = 0;
-        }
+    _stopEnginePoll() {
+        if (this._engineTimer)
+            GLib.source_remove(this._engineTimer);
+        this._engineTimer = 0;
     }
 
-    // ------------------------------------------------------------------
-    // Destruction
-    // ------------------------------------------------------------------
     destroy() {
         if (this._destroyed)
             return;
         this._destroyed = true;
-
-        this._stopEngineCheck();
-        this._artCancellable?.cancel();
-        this._cancellable.cancel();
-
-        if (this._changedId)
-            this._player.disconnect(this._changedId);
-        if (this._positionId)
-            this._player.disconnect(this._positionId);
-
-        this._actor.destroy();
+        this._stopEnginePoll();
+        this._player.disconnectObject(this);
+        this._transport.destroy();
+        this.actor.destroy();
     }
 }

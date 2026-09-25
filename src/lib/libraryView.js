@@ -173,27 +173,14 @@ export class LibraryView {
         this._footer = actor;
         if (actor)
             this.actor.add_child(actor);
-        this._measureFooter();
         this._scheduleFooterRecheck();
     }
 
-    // Root cause of the grid's second row landing under the bar: both
-    // callers (app.js `_buildLibrary`, mediaMenu.js `_view`) build this view,
-    // wire the footer in through setFooter, and only *then* add `this.actor`
-    // to their own stack — the tree that actually carries it onto the real
-    // stage (app.js's background group, joined after `_buildLibrary`
-    // returns; mediaMenu.js's app-display slot, joined right after this
-    // call). So the first time this runs, `this.actor` — and the footer
-    // inside it — has no stage yet: `ensureStyleDeep` still walks the
-    // subtree, but a theme node can't resolve real margins, spacing or the
-    // footer's own CSS height against a stylesheet that isn't reachable from
-    // an unparented actor, so `get_preferred_height` comes back short (or
-    // zero) and the grid is handed too generous a budget. The stack doesn't
-    // clip (by design, so a hovered edge tile isn't cut off), so the extra
-    // row it packs in is not clipped either — it simply renders behind the
-    // bar. Re-measuring once more on the next idle, after the caller has
-    // finished attaching this view to the stage, catches the real number and
-    // rebuilds every page against it.
+    // Both callers build this view, set the footer, and only then put the
+    // view on the stage, and a footer measured off the stage has no theme to
+    // answer with. So it is measured on the next idle, by which time the view
+    // is on the stage; the first pages, built against no footer, are built
+    // again against the real height.
     _scheduleFooterRecheck() {
         if (this._footerRecheckId)
             return;
@@ -205,6 +192,8 @@ export class LibraryView {
     }
 
     _measureFooter() {
+        if (!this.actor.get_stage())
+            return;
         ensureStyleDeep(this.actor);
         const height = this._footer ? Math.max(0, this._footer.get_preferred_height(-1)[1]) : 0;
         // Nothing to redo if the number didn't move and pages already exist

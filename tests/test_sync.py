@@ -347,3 +347,83 @@ class TestSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestArtworkDownload(unittest.TestCase):
+    """Normalisation names the file; download_art fetches what is missing."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        sync.ART_URLS.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir)
+        sync.ART_URLS.clear()
+
+    def _album(self, art_url):
+        return {
+            "id": "l.one", "type": "library-albums",
+            "attributes": {"name": "One", "artistName": "A", "artwork": {"url": art_url}},
+        }
+
+    def test_extract_registers_url_for_path(self):
+        item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
+        self.assertTrue(item["art"].startswith(os.path.join(self.tmp_dir, "art")))
+        self.assertEqual(sync.ART_URLS[item["art"]], "https://x/512x512bb.jpg")
+
+    def test_download_art_fetches_only_missing(self):
+        item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
+        other = sync.normalize_album(dict(self._album("https://y/{w}x{h}bb.jpg"), id="l.two"), cache_dir=self.tmp_dir)
+        os.makedirs(os.path.dirname(other["art"]), exist_ok=True)
+        with open(other["art"], "wb") as f:
+            f.write(b"already here")
+        lib = {"sections": {"albums": [item, other]}, "shelves": []}
+
+        fetched = []
+
+        def fake_cache(url, cache_dir):
+            fetched.append(url)
+            path = sync.artwork_cache_path(url, cache_dir)
+            with open(path, "wb") as f:
+                f.write(b"img")
+            return path
+
+        real = sync.cache_artwork
+        sync.cache_artwork = fake_cache
+        try:
+            counts = sync.download_art(lib, self.tmp_dir, log=lambda m: None)
+        finally:
+            sync.cache_artwork = real
+        self.assertEqual(fetched, ["https://x/512x512bb.jpg"])
+        self.assertEqual(counts, {"wanted": 2, "fetched": 1, "failed": 0})
+        self.assertTrue(os.path.exists(item["art"]))
+
+    def test_download_art_counts_failures(self):
+        item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
+        lib = {"sections": {"albums": [item]}, "shelves": []}
+        logged = []
+        real = sync.cache_artwork
+        sync.cache_artwork = lambda url, cache_dir: None
+        try:
+            counts = sync.download_art(lib, self.tmp_dir, log=logged.append)
+        finally:
+            sync.cache_artwork = real
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(len(logged), 1)
+
+    def test_album_stub_without_attributes_takes_song_name(self):
+        songs = [{
+            "id": "i.1", "type": "library-songs",
+            "attributes": {
+                "name": "Pa", "albumName": "Love Collection", "artistName": "Kana",
+                "trackNumber": 1, "discNumber": 1, "durationInMillis": 1000,
+                "artwork": {"url": "https://x/{w}x{h}bb.jpg"},
+            },
+            "relationships": {"albums": {"data": [{"id": "l.gone", "type": "library-albums"}]}},
+        }]
+        albums, artists = sync.group_songs_into_albums_and_artists(songs, self.tmp_dir)
+        self.assertEqual(albums[0]["id"], "l.gone")
+        self.assertEqual(albums[0]["title"], "Love Collection")
+        self.assertEqual(albums[0]["subtitle"], "Kana")
+        self.assertIsNotNone(albums[0]["art"])
+        self.assertEqual(artists[0]["title"], "Kana")

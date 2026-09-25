@@ -44,7 +44,7 @@ import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import {Duration, Ease, POP_SCALE, allocateNow, fadeTo, flyClone, rectIn} from './anim.js';
-import {SECTIONS, loadLibrary, libraryPath, enabledSections} from './library.js';
+import {SECTIONS, loadLibrary, libraryPath, enabledSections, sectionByKey} from './library.js';
 import {createHeader, createIconButton} from './widgets.js';
 import {setCornerRadius, PANE_INSET} from './shape.js';
 import {setGridAlign} from './mediaGrid.js';
@@ -70,12 +70,6 @@ import * as amctl from './amctl.js';
 const KIND_TO_SECTION = {
     album: 'albums', artist: 'artists', playlist: 'playlists', station: 'radio', song: 'albums',
 };
-
-// SECTIONS is a flat list now (no per-video-section registry to import), so
-// the lookup a picked item's key needs is kept here.
-function sectionByKey(key) {
-    return SECTIONS.find(s => s.key === key) ?? SECTIONS[0];
-}
 
 // Gap between the surface and the work-area edges, in logical px.
 const OUTER_MARGIN = 28;
@@ -839,6 +833,7 @@ export class MusicMenuApp {
             if (this._detailMode() === 'modal')
                 this._browser.close();
             this._dialog.popup(tile, item, sectionByKey(key));
+            this._loadGroups(item);
             return;
         }
         this._browser.close();
@@ -846,6 +841,46 @@ export class MusicMenuApp {
         if (this._placeForWorkspace(active) === null)
             this._origin = active;
         this._showDetail(key, item);
+        this._loadGroups(item);
+    }
+
+    // library.json carries a track list for what is in the library, and only
+    // a tile for what a shelf recommends — see AGENTS.md's `sync`. A pick
+    // without one opens at once on what it has, and its list follows from
+    // `am.py item`, filled into the item itself so a second look is instant.
+    _needsGroups(item) {
+        return !!item && item.kind !== 'station' && !!item.play && !item.groups?.length && !item._loadingGroups;
+    }
+
+    async _loadGroups(item) {
+        if (!this._needsGroups(item))
+            return;
+        item._loadingGroups = true;
+        this._dialog?.setLoading(true);
+        this._detail?.setLoading(true);
+        try {
+            const full = await amctl.run(['item', item.kind, item.id]);
+            item.groups = Array.isArray(full.groups) ? full.groups : [];
+            // The count label is the one fact the list changes: a shelf's
+            // "12 songs" becomes "12 songs, 43 min" once the tracks are known.
+            if (item.groups.length && full.countLabel)
+                item.countLabel = full.countLabel;
+            for (const field of ['summary', 'year', 'genre', 'countLabel', 'url', 'catalogId', 'artColor']) {
+                if (item[field] == null && full[field] != null)
+                    item[field] = full[field];
+            }
+            // Its artwork was fetched on the way, if the sync had not.
+            if (!item.art && full.art && GLib.file_test(full.art, GLib.FileTest.EXISTS))
+                item.art = full.art;
+        } catch (e) {
+            console.warn(`[Music Menu] Could not load ${item.kind} ${item.id}: ${e.message}`);
+        } finally {
+            delete item._loadingGroups;
+        }
+        this._dialog?.setLoading(false);
+        this._detail?.setLoading(false);
+        this._dialog?.update(item);
+        this._detail?.update(item);
     }
 
     // The pane onto the surface, wherever this pick is set to open it. Shared
@@ -1343,14 +1378,17 @@ export class MusicMenuApp {
         const section = sectionByKey(key);
         if (this._dialog) {
             this._dialog.popup(tile, item, section);
+            this._loadGroups(item);
             return;
         }
         if (!this._detailInPlace()) {
             this._showDetail(key, item);
+            this._loadGroups(item);
             return;
         }
         this._busy = true;
         this._mode = 'detail';
+        this._loadGroups(item);
 
         const library = this._library;
         this._attachDetail(library.stack);

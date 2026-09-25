@@ -6,12 +6,14 @@ Python standard library only.
 """
 
 from datetime import datetime, timezone
+import concurrent.futures
 import fcntl
 import hashlib
 import html
 import json
 import os
 import re
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -214,6 +216,66 @@ def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0) -> str | No
                 pass
 
 
+# Every artwork path handed out by _extract_artwork, and the 512x512 URL it
+# came from. Normalisation only names the file; nothing is fetched until
+# download_art() runs over a finished library (or download_item_art() over a
+# single on-demand item), so a sync's hundreds of downloads happen together,
+# in threads, rather than one at a time in the middle of building each item.
+ART_URLS: dict[str, str] = {}
+
+
+def _art_missing(path: str) -> bool:
+    try:
+        return os.path.getsize(path) <= 0
+    except OSError:
+        return True
+
+
+def collect_art_urls(library_data: dict) -> dict[str, str]:
+    """{path: url} for every artwork the library refers to that ART_URLS knows."""
+    return {p: ART_URLS[p] for p in collect_art_paths(library_data) if p in ART_URLS}
+
+
+def download_art(library_data_or_urls, cache_dir: str, workers: int = 8, log=None) -> dict:
+    """Fetch every artwork the library refers to that is not in the cache yet.
+
+    Takes a library dict (paths resolved through ART_URLS) or a {path: url}
+    map. Returns {"wanted", "fetched", "failed"}. Failures are logged through
+    `log` (a callable taking a string) and otherwise ignored: the UI treats a
+    path that is not on disk as no artwork.
+    """
+    urls = library_data_or_urls if isinstance(library_data_or_urls, dict) and "sections" not in library_data_or_urls \
+        else collect_art_urls(library_data_or_urls)
+    todo = {p: u for p, u in urls.items() if _art_missing(p)}
+    counts = {"wanted": len(urls), "fetched": 0, "failed": 0}
+    if not todo:
+        return counts
+    os.makedirs(os.path.join(cache_dir, "art"), exist_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {pool.submit(cache_artwork, url, cache_dir): url for url in todo.values()}
+        for fut in concurrent.futures.as_completed(futures):
+            ok = False
+            try:
+                ok = bool(fut.result())
+            except Exception:
+                ok = False
+            if ok:
+                counts["fetched"] += 1
+            else:
+                counts["failed"] += 1
+                if log:
+                    log(f"artwork: could not fetch {futures[fut]}")
+    return counts
+
+
+def download_item_art(item: dict, cache_dir: str) -> dict:
+    """Fetch one item's own artwork (and its groups' entries carry none), in place."""
+    path = item.get("art") if isinstance(item, dict) else None
+    if path and path in ART_URLS and _art_missing(path):
+        cache_artwork(ART_URLS[path], cache_dir)
+    return item
+
+
 def collect_art_paths(library_data: dict) -> set[str]:
     """Collect all referenced local artwork paths from a library data dict."""
     paths = set()
@@ -345,6 +407,7 @@ def _extract_artwork(attrs: dict, raw_item: dict, cache_dir: str | None) -> tupl
             templated = template_artwork_url(url, 512, 512)
             if cache_dir:
                 art = artwork_cache_path(templated, cache_dir)
+                ART_URLS[art] = templated
         bg = artwork.get("bgColor")
         if bg and not art_color:
             art_color = format_color(bg)
@@ -539,7 +602,9 @@ def normalize_album(
         })
 
     song_count = len(normalized_tracks)
-    total_duration_ms = sum(t["durationMs"] for t in normalized_tracks)
+    # No tracks in hand (a shelf item, normalised without its list): the
+    # count alone, rather than a "0 min" that reads as an empty album.
+    total_duration_ms = sum(t["durationMs"] for t in normalized_tracks) if normalized_tracks else None
     if song_count == 0 and attrs.get("trackCount"):
         try:
             song_count = int(attrs["trackCount"])
@@ -739,7 +804,9 @@ def normalize_playlist(
     ]
 
     song_count = len(normalized_tracks)
-    total_duration_ms = sum(t["durationMs"] for t in normalized_tracks)
+    # No tracks in hand (a shelf item, normalised without its list): the
+    # count alone, rather than a "0 min" that reads as an empty album.
+    total_duration_ms = sum(t["durationMs"] for t in normalized_tracks) if normalized_tracks else None
     if song_count == 0 and attrs.get("trackCount"):
         try:
             song_count = int(attrs["trackCount"])
@@ -942,7 +1009,20 @@ def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None
         if rel_albums:
             alb_rel = rel_albums[0]
             alb_id = alb_rel.get("id")
-            alb_obj = alb_rel
+            # A song can point at a library album that no longer answers
+            # (the relationship survives the album resource): a stub with
+            # no attributes. The song itself knows the album's name, artist
+            # and artwork, so the stub is filled in from it rather than
+            # becoming a nameless tile.
+            alb_attrs = dict(alb_rel.get("attributes") or {})
+            if not alb_attrs.get("name"):
+                alb_attrs.setdefault("name", album_name)
+                alb_attrs.setdefault("artistName", artist_name)
+                alb_attrs.setdefault("artwork", s_attrs.get("artwork"))
+                alb_attrs.setdefault("releaseDate", s_attrs.get("releaseDate"))
+                alb_attrs.setdefault("genreNames", s_attrs.get("genreNames", []))
+                alb_attrs.setdefault("contentRating", s_attrs.get("contentRating"))
+            alb_obj = dict(alb_rel, attributes=alb_attrs)
         else:
             alb_id = f"l.alb_{hashlib.md5(f'{album_name}:{artist_name}'.encode('utf-8')).hexdigest()[:12]}"
             alb_obj = {
