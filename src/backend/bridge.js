@@ -1,0 +1,408 @@
+/**
+ * Page-side helper injected into music.apple.com to bridge MusicKit JS with am.py.
+ * Defines window.__musicMenu idempotently.
+ */
+
+(function () {
+    if (window.__musicMenu) {
+        return;
+    }
+
+    function getMusicKit() {
+        if (typeof window.MusicKit === 'undefined') {
+            return null;
+        }
+        try {
+            return window.MusicKit.getInstance();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function formatDuration(ms) {
+        if (!ms || ms <= 0) return '0:00';
+        const totalSec = Math.floor(ms / 1000);
+        const sec = totalSec % 60;
+        const min = Math.floor(totalSec / 60) % 60;
+        const hr = Math.floor(totalSec / 3600);
+        const secStr = sec < 10 ? '0' + sec : String(sec);
+        if (hr > 0) {
+            const minStr = min < 10 ? '0' + min : String(min);
+            return hr + ':' + minStr + ':' + secStr;
+        }
+        return min + ':' + secStr;
+    }
+
+    function formatTrack(item, index) {
+        if (!item) return null;
+        const attrs = item.attributes || {};
+        const id = item.id || '';
+        const playParams = attrs.playParams || item.playParams || {};
+        const catalogId = playParams.catalogId || item.catalogId || (id.startsWith('l.') || id.startsWith('i.') ? null : id) || null;
+        const durationMs = item.playbackDuration ? Math.round(item.playbackDuration * 1000) : (attrs.durationInMillis || 0);
+
+        return {
+            id: id,
+            catalogId: catalogId,
+            title: item.title || attrs.name || '',
+            artist: item.artistName || attrs.artistName || '',
+            album: item.albumName || attrs.albumName || '',
+            trackNumber: item.trackNumber || attrs.trackNumber || 1,
+            discNumber: item.discNumber || attrs.discNumber || 1,
+            durationMs: durationMs,
+            durationLabel: formatDuration(durationMs),
+            explicit: attrs.contentRating === 'explicit',
+            index: typeof index === 'number' ? index : 0
+        };
+    }
+
+    function shuffleModeToString(mode) {
+        return mode === 1 ? 'on' : 'off';
+    }
+
+    function repeatModeToString(mode) {
+        if (mode === 1) return 'one';
+        if (mode === 2) return 'all';
+        return 'none';
+    }
+
+    function parseTimeMs(timeStr) {
+        if (!timeStr) return 0;
+        timeStr = timeStr.trim();
+        if (timeStr.endsWith('s')) {
+            return Math.round(parseFloat(timeStr.slice(0, -1)) * 1000);
+        }
+        const parts = timeStr.split(':');
+        if (parts.length === 2) {
+            return Math.round(parseFloat(parts[0]) * 60000 + parseFloat(parts[1]) * 1000);
+        }
+        if (parts.length === 3) {
+            return Math.round(parseFloat(parts[0]) * 3600000 + parseFloat(parts[1]) * 60000 + parseFloat(parts[2]) * 1000);
+        }
+        return Math.round(parseFloat(timeStr) * 1000);
+    }
+
+    function parseTtmlLyrics(ttml) {
+        const lines = [];
+        const pRegex = /<p\b([^>]*)>([\s\S]*?)<\/p>/gi;
+        let match;
+        let synced = false;
+        while ((match = pRegex.exec(ttml)) !== null) {
+            const attrsStr = match[1];
+            const rawText = match[2].replace(/<[^>]+>/g, '').trim();
+            if (!rawText) continue;
+
+            const beginMatch = attrsStr.match(/begin="([^"]+)"/i);
+            const endMatch = attrsStr.match(/end="([^"]+)"/i);
+            const startMs = beginMatch ? parseTimeMs(beginMatch[1]) : 0;
+            const endMs = endMatch ? parseTimeMs(endMatch[1]) : 0;
+            if (beginMatch) synced = true;
+
+            lines.push({
+                startMs: startMs,
+                endMs: endMs,
+                text: rawText
+            });
+        }
+        return { synced: synced, lines: lines };
+    }
+
+    window.__musicMenu = {
+        status: function () {
+            const mk = getMusicKit();
+            return {
+                ready: !!(mk && typeof mk.isAuthorized !== 'undefined'),
+                engine: true,
+                authorized: !!(mk && mk.isAuthorized),
+                storefront: (mk && mk.storefrontId) ? mk.storefrontId : 'us',
+                bitrate: (mk && typeof mk.bitrate === 'number') ? mk.bitrate : 256
+            };
+        },
+
+        signin: async function () {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            await mk.authorize();
+            return { authorized: !!mk.isAuthorized };
+        },
+
+        api: async function (path, params, options) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            return await mk.api.music(path, params || {}, options || {});
+        },
+
+        play: async function (kind, id, options) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            options = options || {};
+            const startWith = options.startWith !== undefined ? Number(options.startWith) : 0;
+            const shuffle = !!options.shuffle;
+
+            if (shuffle) {
+                if (window.MusicKit && window.MusicKit.PlayerShuffleMode) {
+                    mk.shuffleMode = window.MusicKit.PlayerShuffleMode.songs;
+                } else {
+                    mk.shuffleMode = 1;
+                }
+            }
+
+            const queueObj = { startWith: startWith, startPlaying: true };
+            if (kind === 'album') {
+                queueObj.album = id;
+            } else if (kind === 'playlist') {
+                queueObj.playlist = id;
+            } else if (kind === 'station') {
+                queueObj.station = id;
+            } else if (kind === 'song') {
+                queueObj.song = id;
+            } else if (kind === 'artist') {
+                try {
+                    const sf = mk.storefrontId || 'us';
+                    const isLib = id.startsWith('l.') || id.startsWith('r.');
+                    const endpoint = isLib
+                        ? `/v1/me/library/artists/${id}/view/top-songs`
+                        : `/v1/catalog/${sf}/artists/${id}/view/top-songs`;
+                    const res = await mk.api.music(endpoint, { limit: 100 });
+                    if (res && res.data && res.data.length > 0) {
+                        queueObj.songs = res.data.map(function (s) { return s.id; });
+                    } else {
+                        queueObj.station = id;
+                    }
+                } catch (e) {
+                    queueObj.station = id;
+                }
+            } else {
+                queueObj[kind] = id;
+            }
+
+            await mk.setQueue(queueObj);
+            await mk.play();
+            return { ok: true };
+        },
+
+        playNext: async function (kind, id) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const q = {};
+            q[kind === 'song' ? 'song' : kind] = id;
+            await mk.playNext(q);
+            return { ok: true };
+        },
+
+        playLater: async function (kind, id) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const q = {};
+            q[kind === 'song' ? 'song' : kind] = id;
+            await mk.playLater(q);
+            return { ok: true };
+        },
+
+        control: async function (action) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            switch (action) {
+                case 'play':
+                    await mk.play();
+                    break;
+                case 'pause':
+                    await mk.pause();
+                    break;
+                case 'toggle':
+                    if (mk.isPlaying) await mk.pause();
+                    else await mk.play();
+                    break;
+                case 'next':
+                    await mk.skipToNextItem();
+                    break;
+                case 'previous':
+                    await mk.skipToPreviousItem();
+                    break;
+                case 'stop':
+                    await mk.stop();
+                    break;
+                default:
+                    throw new Error('Unknown control action: ' + action);
+            }
+            return { ok: true };
+        },
+
+        seek: async function (sec) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            await mk.seekToTime(Number(sec));
+            return { ok: true };
+        },
+
+        volume: async function (val) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            mk.volume = Math.max(0, Math.min(1, Number(val)));
+            return { ok: true };
+        },
+
+        shuffle: async function (mode) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            if (mode === 'on') {
+                mk.shuffleMode = 1;
+            } else if (mode === 'off') {
+                mk.shuffleMode = 0;
+            } else if (mode === 'toggle') {
+                mk.shuffleMode = mk.shuffleMode === 1 ? 0 : 1;
+            }
+            return {
+                shuffle: shuffleModeToString(mk.shuffleMode),
+                repeat: repeatModeToString(mk.repeatMode)
+            };
+        },
+
+        repeat: async function (mode) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            if (mode === 'none') {
+                mk.repeatMode = 0;
+            } else if (mode === 'one') {
+                mk.repeatMode = 1;
+            } else if (mode === 'all') {
+                mk.repeatMode = 2;
+            } else if (mode === 'cycle') {
+                mk.repeatMode = ((mk.repeatMode || 0) + 1) % 3;
+            }
+            return {
+                shuffle: shuffleModeToString(mk.shuffleMode),
+                repeat: repeatModeToString(mk.repeatMode)
+            };
+        },
+
+        nowPlaying: function () {
+            const mk = getMusicKit();
+            if (!mk) {
+                return {
+                    state: 'stopped',
+                    track: null,
+                    position: 0,
+                    duration: 0,
+                    shuffle: 'off',
+                    repeat: 'none',
+                    volume: 1
+                };
+            }
+            const item = mk.nowPlayingItem;
+            const track = item ? formatTrack(item, mk.nowPlayingItemIndex ?? 0) : null;
+            let state = 'stopped';
+            if (mk.isPlaying) {
+                state = 'playing';
+            } else if (track) {
+                state = 'paused';
+            }
+            return {
+                state: state,
+                track: track,
+                position: mk.currentPlaybackTime || 0,
+                duration: mk.currentPlaybackDuration || 0,
+                shuffle: shuffleModeToString(mk.shuffleMode),
+                repeat: repeatModeToString(mk.repeatMode),
+                volume: typeof mk.volume === 'number' ? mk.volume : 1
+            };
+        },
+
+        queue: function () {
+            const mk = getMusicKit();
+            if (!mk || !mk.queue) {
+                return { index: 0, items: [] };
+            }
+            const items = (mk.queue.items || []).map(function (it, idx) {
+                return formatTrack(it, idx);
+            });
+            return {
+                index: mk.queue.position || 0,
+                items: items
+            };
+        },
+
+        rating: async function (kind, id, love) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const path = '/v1/me/ratings/' + kind + 's/' + id;
+            if (love) {
+                await mk.api.music(path, {}, {
+                    method: 'PUT',
+                    body: JSON.stringify({ type: 'ratings', attributes: { value: 1 } })
+                });
+            } else {
+                await mk.api.music(path, {}, { method: 'DELETE' });
+            }
+            return { ok: true };
+        },
+
+        addToLibrary: async function (kind, id) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const query = {};
+            query['ids[' + kind + 's]'] = id;
+            await mk.api.music('/v1/me/library', query, { method: 'POST' });
+            return { ok: true };
+        },
+
+        playlists: async function () {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const res = await mk.api.music('/v1/me/library/playlists', { limit: 100 });
+            const data = (res && res.data) ? res.data : [];
+            const items = data
+                .filter(function (p) { return p.attributes && p.attributes.canEdit !== false; })
+                .map(function (p) {
+                    return {
+                        id: p.id,
+                        title: p.attributes ? p.attributes.name : ''
+                    };
+                });
+            return { items: items };
+        },
+
+        addToPlaylist: async function (playlistId, songId) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const path = '/v1/me/library/playlists/' + playlistId + '/tracks';
+            await mk.api.music(path, {}, {
+                method: 'POST',
+                body: JSON.stringify({ data: [{ id: songId, type: 'songs' }] })
+            });
+            return { ok: true };
+        },
+
+        lyrics: async function (catalogSongId) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const sf = mk.storefrontId || 'us';
+            const path = `/v1/catalog/${sf}/songs/${catalogSongId}/lyrics`;
+            try {
+                const res = await mk.api.music(path);
+                const data = (res && res.data && res.data[0]) ? res.data[0] : null;
+                if (!data || !data.attributes) {
+                    return { synced: false, lines: [] };
+                }
+                const attrs = data.attributes;
+                if (attrs.ttml) {
+                    return parseTtmlLyrics(attrs.ttml);
+                }
+                return { synced: false, lines: [] };
+            } catch (err) {
+                return { synced: false, lines: [] };
+            }
+        },
+
+        search: async function (term, isLibrary, limit) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const sf = mk.storefrontId || 'us';
+            const types = isLibrary
+                ? 'library-albums,library-artists,library-playlists,library-songs'
+                : 'albums,artists,playlists,songs';
+            const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
+            return await mk.api.music(path, { term: term, types: types, limit: limit || 20 });
+        }
+    };
+})();

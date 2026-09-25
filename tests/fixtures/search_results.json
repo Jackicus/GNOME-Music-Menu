@@ -1,0 +1,95 @@
+{
+  "results": {
+    "albums": {
+      "data": [
+        {
+          "id": "1724040700",
+          "type": "albums",
+          "href": "/v1/catalog/us/albums/1724040700",
+          "attributes": {
+            "name": "Rise or Die Trying",
+            "artistName": "Four Year Strong",
+            "releaseDate": "2007-09-18",
+            "trackCount": 12,
+            "genreNames": ["Rock"],
+            "artwork": {
+              "width": 1400,
+              "height": 1400,
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/12/34/56/{w}x{h}bb.jpg",
+              "bgColor": "1a1a1a"
+            },
+            "playParams": {
+              "id": "1724040700",
+              "kind": "album"
+            }
+          }
+        }
+      ]
+    },
+    "artists": {
+      "data": [
+        {
+          "id": "123456",
+          "type": "artists",
+          "href": "/v1/catalog/us/artists/123456",
+          "attributes": {
+            "name": "Four Year Strong",
+            "genreNames": ["Rock"],
+            "url": "https://music.apple.com/us/artist/four-year-strong/123456",
+            "artwork": {
+              "width": 1000,
+              "height": 1000,
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/fys/{w}x{h}bb.jpg",
+              "bgColor": "444444"
+            }
+          }
+        }
+      ]
+    },
+    "songs": {
+      "data": [
+        {
+          "id": "1724040711",
+          "type": "songs",
+          "href": "/v1/catalog/us/songs/1724040711",
+          "attributes": {
+            "name": "Heroes Get Remembered, Legends Never Die",
+            "artistName": "Four Year Strong",
+            "albumName": "Rise or Die Trying",
+            "trackNumber": 3,
+            "discNumber": 1,
+            "durationInMillis": 216000,
+            "contentRating": "explicit",
+            "playParams": {
+              "id": "1724040711",
+              "kind": "song"
+            }
+          }
+        }
+      ]
+    },
+    "playlists": {
+      "data": [
+        {
+          "id": "pl.fys-essentials",
+          "type": "playlists",
+          "href": "/v1/catalog/us/playlists/pl.fys-essentials",
+          "attributes": {
+            "name": "Four Year Strong Essentials",
+            "curatorName": "Apple Music Rock",
+            "artwork": {
+              "width": 1000,
+              "height": 1000,
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/fys_ess/{w}x{h}bb.jpg",
+              "bgColor": "333333"
+            },
+            "playParams": {
+              "id": "pl.fys-essentials",
+              "kind": "playlist"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
