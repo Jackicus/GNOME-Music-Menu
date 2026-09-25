@@ -330,6 +330,34 @@ class TestCDPClient(unittest.TestCase):
         finally:
             server.close()
 
+    def test_evaluate_js_exception_is_one_line(self):
+        """The stack and the doubled "Uncaught" text stay out of the message."""
+        server = MockWebSocketServer()
+
+        def handler(srv: MockWebSocketServer, client: socket.socket):
+            opcode, fin, payload = srv.recv_frame()
+            msg = json.loads(payload.decode("utf-8"))
+            srv.send_frame(1, json.dumps({
+                "id": msg["id"],
+                "result": {
+                    "exceptionDetails": {
+                        "text": "Uncaught (in promise) Error: HTTP 500 Unable to update tracks",
+                        "exception": {"description": "Error: HTTP 500 Unable to update tracks\n"
+                                                     "    at apiWrite (<anonymous>:59:28)"}
+                    }
+                }
+            }).encode("utf-8"))
+
+        server.start(handler)
+        try:
+            ws_url = f"ws://127.0.0.1:{server.port}/devtools/page/test"
+            with CDPClient(ws_url, timeout=3.0) as client:
+                with self.assertRaises(CDPError) as ctx:
+                    client.evaluate("window.__musicMenu.addToPlaylist('p', '1')", await_promise=True)
+                self.assertEqual(str(ctx.exception), "JS Exception: HTTP 500 Unable to update tracks")
+        finally:
+            server.close()
+
     def test_cdp_error_response(self):
         """Test that a CDP error payload raises CDPError with code and message."""
         server = MockWebSocketServer()

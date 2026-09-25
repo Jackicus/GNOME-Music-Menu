@@ -470,9 +470,14 @@ class CDPClient:
 
         if "exceptionDetails" in result:
             exc = result["exceptionDetails"]
-            text = exc.get("text", "JS exception")
-            desc = (exc.get("exception") or {}).get("description", "")
-            raise CDPError(f"JS Exception: {text} - {desc}", data=exc)
+            desc = (exc.get("exception") or {}).get("description") or exc.get("text") or "JS exception"
+            # `description` is the message followed by the stack, and `text`
+            # repeats the message behind "Uncaught (in promise)". One line is
+            # all a notification can show; the rest rides along in `data`.
+            message = desc.splitlines()[0]
+            if message.startswith("Error: "):
+                message = message[len("Error: "):]
+            raise CDPError(f"JS Exception: {message}", data=exc)
 
         result_obj = result.get("result")
         if isinstance(result_obj, dict):
