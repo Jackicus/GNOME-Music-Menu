@@ -218,6 +218,25 @@ def engine_stop():
     return {"running": False, "pid": None, "port": port, "headless": headless}
 
 
+def wait_for_chrome(port, deadline_sec=15):
+    """Poll until Chrome's debugging port accepts a CDP connection.
+
+    Chrome takes a moment after exec to open its debug port, so a single
+    connect attempt right after Popen() usually meets connection refused.
+    Retries until deadline_sec elapses, returning a connected CDPClient or
+    None on timeout.
+    """
+    deadline = time.time() + deadline_sec
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            return connect_to_chrome(port, timeout=2)
+        except Exception as e:
+            last_exc = e
+            time.sleep(0.2)
+    return None
+
+
 def ensure_bridge(client, timeout=15):
     """Inject bridge.js into page and poll until MusicKit is ready."""
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge.js")
@@ -306,11 +325,10 @@ def engine_start(headless=None):
     }
     save_state(state)
 
-    try:
-        client = connect_to_chrome(port, timeout=15)
-    except Exception as e:
+    client = wait_for_chrome(port, deadline_sec=15)
+    if client is None:
         engine_stop()
-        raise AmError("timeout", f"Timed out connecting to Chrome: {e}")
+        raise AmError("timeout", f"Timed out waiting for Chrome to open its debugging port {port}")
 
     try:
         ensure_bridge(client, timeout=15)
@@ -514,7 +532,7 @@ def handle_item(kind, item_id, no_start=False):
         elif kind == "playlist":
             endpoint = f"/v1/me/library/playlists/{item_id}?include=tracks" if is_lib else f"/v1/catalog/{sf}/playlists/{item_id}?include=tracks"
         elif kind == "artist":
-            endpoint = f"/v1/me/library/artists/{item_id}/albums?include=tracks" if is_lib else f"/v1/catalog/{sf}/artists/{item_id}/albums?include=tracks"
+            endpoint = f"/v1/me/library/artists/{item_id}?include=albums" if is_lib else f"/v1/catalog/{sf}/artists/{item_id}?include=albums"
         elif kind == "station":
             endpoint = f"/v1/catalog/{sf}/stations/{item_id}"
         elif kind == "song":
@@ -533,13 +551,34 @@ def handle_item(kind, item_id, no_start=False):
 
         raw_obj = data[0]
         if kind == "artist":
+            # The artist resource itself carries the artist's own attributes;
+            # its included albums are stubs (no track relationships), so
+            # fetch each album's full track list before normalizing.
             artist_obj = {
                 "id": item_id,
-                "type": "artists",
+                "type": raw_obj.get("type", "artists"),
                 "attributes": raw_obj.get("attributes", {}),
             }
-            albums = data if raw_obj.get("type") in ("albums", "library-albums") else raw_obj.get("relationships", {}).get("albums", {}).get("data", [])
-            return sync.normalize_artist(artist_obj, cache_dir, albums=albums)
+            album_stubs = raw_obj.get("relationships", {}).get("albums", {}).get("data", [])
+            full_albums = []
+            for stub in album_stubs:
+                alb_id = stub.get("id")
+                alb_is_lib = isinstance(alb_id, str) and (alb_id.startswith("l.") or alb_id.startswith("p."))
+                alb_endpoint = (
+                    f"/v1/me/library/albums/{alb_id}?include=tracks"
+                    if alb_is_lib
+                    else f"/v1/catalog/{sf}/albums/{alb_id}?include=tracks"
+                )
+                try:
+                    alb_res = client.evaluate(f"window.__musicMenu.api({json.dumps(alb_endpoint)})", await_promise=True)
+                    alb_data = alb_res.get("data", []) if alb_res else []
+                    if alb_data:
+                        full_albums.append(alb_data[0])
+                    else:
+                        full_albums.append(stub)
+                except Exception:
+                    full_albums.append(stub)
+            return sync.normalize_artist(artist_obj, cache_dir, albums=full_albums)
 
         return sync.normalize_item(raw_obj, cache_dir, include_groups=True)
     finally:

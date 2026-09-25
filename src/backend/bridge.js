@@ -19,6 +19,18 @@
         }
     }
 
+    // MusicKit v3's `mk.api.music()` resolves to its own request wrapper
+    // (`{url, status, statusText, text, json, data}`), where `.data` is the
+    // actual Apple Music API response body (`{data: [...]}` for resource
+    // endpoints, `{results: {...}}` for search). Every caller in this file
+    // wants that body, not the wrapper, so unwrap it in one place.
+    async function apiCall(path, params, options) {
+        const mk = getMusicKit();
+        if (!mk) throw new Error('MusicKit not initialized');
+        const wrapped = await mk.api.music(path, params || {}, options || {});
+        return (wrapped && typeof wrapped.data !== 'undefined') ? wrapped.data : wrapped;
+    }
+
     function formatDuration(ms) {
         if (!ms || ms <= 0) return '0:00';
         const totalSec = Math.floor(ms / 1000);
@@ -127,9 +139,7 @@
         },
 
         api: async function (path, params, options) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
-            return await mk.api.music(path, params || {}, options || {});
+            return await apiCall(path, params, options);
         },
 
         play: async function (kind, id, options) {
@@ -163,7 +173,7 @@
                     const endpoint = isLib
                         ? `/v1/me/library/artists/${id}/view/top-songs`
                         : `/v1/catalog/${sf}/artists/${id}/view/top-songs`;
-                    const res = await mk.api.music(endpoint, { limit: 100 });
+                    const res = await apiCall(endpoint, { limit: 100 });
                     if (res && res.data && res.data.length > 0) {
                         queueObj.songs = res.data.map(function (s) { return s.id; });
                     } else {
@@ -323,33 +333,27 @@
         },
 
         rating: async function (kind, id, love) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
             const path = '/v1/me/ratings/' + kind + 's/' + id;
             if (love) {
-                await mk.api.music(path, {}, {
+                await apiCall(path, {}, {
                     method: 'PUT',
                     body: JSON.stringify({ type: 'ratings', attributes: { value: 1 } })
                 });
             } else {
-                await mk.api.music(path, {}, { method: 'DELETE' });
+                await apiCall(path, {}, { method: 'DELETE' });
             }
             return { ok: true };
         },
 
         addToLibrary: async function (kind, id) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
             const query = {};
             query['ids[' + kind + 's]'] = id;
-            await mk.api.music('/v1/me/library', query, { method: 'POST' });
+            await apiCall('/v1/me/library', query, { method: 'POST' });
             return { ok: true };
         },
 
         playlists: async function () {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
-            const res = await mk.api.music('/v1/me/library/playlists', { limit: 100 });
+            const res = await apiCall('/v1/me/library/playlists', { limit: 100 });
             const data = (res && res.data) ? res.data : [];
             const items = data
                 .filter(function (p) { return p.attributes && p.attributes.canEdit !== false; })
@@ -363,10 +367,8 @@
         },
 
         addToPlaylist: async function (playlistId, songId) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
             const path = '/v1/me/library/playlists/' + playlistId + '/tracks';
-            await mk.api.music(path, {}, {
+            await apiCall(path, {}, {
                 method: 'POST',
                 body: JSON.stringify({ data: [{ id: songId, type: 'songs' }] })
             });
@@ -379,7 +381,7 @@
             const sf = mk.storefrontId || 'us';
             const path = `/v1/catalog/${sf}/songs/${catalogSongId}/lyrics`;
             try {
-                const res = await mk.api.music(path);
+                const res = await apiCall(path);
                 const data = (res && res.data && res.data[0]) ? res.data[0] : null;
                 if (!data || !data.attributes) {
                     return { synced: false, lines: [] };
@@ -402,7 +404,7 @@
                 ? 'library-albums,library-artists,library-playlists,library-songs'
                 : 'albums,artists,playlists,songs';
             const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
-            return await mk.api.music(path, { term: term, types: types, limit: limit || 20 });
+            return await apiCall(path, { term: term, types: types, limit: limit || 20 });
         }
     };
 })();

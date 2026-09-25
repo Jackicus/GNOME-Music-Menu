@@ -40,16 +40,20 @@ def format_duration(duration_ms: int | None) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def format_count_label(song_count: int | None, total_duration_ms: int | None = 0) -> str:
+def format_count_label(song_count: int | None, total_duration_ms: int | None = None) -> str:
     """Format song count and total duration into a count label.
 
-    e.g. '12 songs, 43 min', '1 song, 4 min', '1 song, 1 min', '20 songs, 1 hr 15 min'.
+    e.g. '1 song' (no duration given), '12 songs, 43 min', '20 songs, 1 hr 15 min'.
     """
     count = max(0, int(song_count)) if song_count is not None else 0
-    duration = max(0, int(total_duration_ms)) if total_duration_ms is not None else 0
 
     song_word = "song" if count == 1 else "songs"
     songs_part = f"{count} {song_word}"
+
+    if total_duration_ms is None:
+        return songs_part
+
+    duration = max(0, int(total_duration_ms))
 
     if duration == 0:
         dur_part = "0 min"
@@ -292,6 +296,15 @@ def _extract_year(attrs: dict, raw_item: dict) -> int | None:
         except (ValueError, TypeError):
             pass
 
+    # Playlists have no release date; fall back to when they were last
+    # modified so the UI still has a year to show.
+    mod_date = attrs.get("lastModifiedDate") or raw_item.get("lastModifiedDate")
+    if mod_date and isinstance(mod_date, str) and len(mod_date) >= 4:
+        try:
+            return int(mod_date[:4])
+        except ValueError:
+            pass
+
     return None
 
 
@@ -496,26 +509,34 @@ def normalize_album(
         return (d_int, tr_int)
 
     sorted_tracks = sorted(raw_tracks, key=track_sort_key)
-    normalized_tracks = [
-        normalize_track(t, index=idx)
-        for idx, t in enumerate(sorted_tracks)
-    ]
 
-    # Group tracks by discNumber
-    discs: dict[int, list[dict]] = {}
-    for t in normalized_tracks:
-        d = t.get("discNumber", 1) or 1
-        discs.setdefault(d, []).append(t)
+    # Group raw tracks by discNumber first, so each group's tracks are
+    # indexed from 0 within that group (a group is played on its own, so
+    # "index" is the position in *that* group's queue, not the whole album).
+    raw_discs: dict[int, list[dict]] = {}
+    for t in sorted_tracks:
+        t_attrs = t.get("attributes") or {}
+        d = t_attrs.get("discNumber") if t_attrs.get("discNumber") is not None else t.get("discNumber", 1)
+        try:
+            d_int = int(d) if d is not None else 1
+        except (ValueError, TypeError):
+            d_int = 1
+        raw_discs.setdefault(d_int, []).append(t)
 
+    normalized_tracks = []
     groups = []
-    if discs:
-        for d in sorted(discs.keys()):
-            disc_label = f"Disc {d if d > 0 else 1}"
-            groups.append({
-                "name": disc_label,
-                "play": {"kind": "album", "id": item_id},
-                "entries": discs[d],
-            })
+    for d in sorted(raw_discs.keys()):
+        disc_label = f"Disc {d if d > 0 else 1}"
+        disc_entries = [
+            normalize_track(t, index=idx)
+            for idx, t in enumerate(raw_discs[d])
+        ]
+        normalized_tracks.extend(disc_entries)
+        groups.append({
+            "name": disc_label,
+            "play": {"kind": "album", "id": item_id},
+            "entries": disc_entries,
+        })
 
     song_count = len(normalized_tracks)
     total_duration_ms = sum(t["durationMs"] for t in normalized_tracks)
@@ -711,7 +732,7 @@ def normalize_playlist(
 
     groups = [
         {
-            "name": "Playlist",
+            "name": "Tracks",
             "play": {"kind": "playlist", "id": item_id},
             "entries": normalized_tracks,
         }
