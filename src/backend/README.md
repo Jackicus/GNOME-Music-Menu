@@ -33,11 +33,16 @@ started}`, which `player.js` reads to pick Chrome's MPRIS player out of the
 bus by PID.
 
 The page exposes MusicKit v3 as a global, and that is all the bridge uses:
-`mk.api.music(path, params)` for the API, `mk.setQueue({album|playlist|
+`mk.api.music(path, params)` for reads, `mk.setQueue({album|playlist|
 station|song|songs, startWith, startPlaying})` and `mk.play()` for
 playback, `mk.playNext`/`mk.playLater`, `mk.shuffleMode`/`mk.repeatMode`,
 and `mk.isAuthorized`/`mk.storefrontId`. API failures come back as a 200
 with `{"errors": [...]}`, which `am.py` treats as a failure and retries.
+Writes (love, add to library, add to playlist) use
+`mk.api.client.createRequest(path, {params, method, body}).send()` instead
+of `music()`: Apple answers them with 202 or 204 and an empty body, which
+`music()` cannot parse, and a refusal is a 4xx that `music()` would hand
+back as if it had worked. The bridge checks the status itself.
 
 Every command starts the engine if it is not running — headless, or
 visible when the `engine-headless` setting is off — unless `--no-start` is

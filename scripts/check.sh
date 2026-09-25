@@ -9,6 +9,7 @@ for f in src/*.js src/lib/*.js; do
     cp "$f" "$tmp/x.mjs"
     node --check "$tmp/x.mjs" 2>"$tmp/err" || { echo "JS syntax: $f"; sed 's/^/    /' "$tmp/err"; fail=1; }
 done
+node tests/js/test_bridge.js || fail=1
 python3 -m py_compile src/backend/*.py scripts/*.py || fail=1
 glib-compile-schemas --strict --dry-run src/schemas || { echo "schema does not compile"; fail=1; }
 python3 -m unittest discover -s tests -q || fail=1

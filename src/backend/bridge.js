@@ -34,6 +34,45 @@
         return (wrapped && typeof wrapped.data !== 'undefined') ? wrapped.data : wrapped;
     }
 
+    // Apple answers library writes with 202 Accepted or 204 No Content and
+    // an empty body, and `music()` parses every body as JSON before handing
+    // it back: a write that worked throws "Unexpected end of JSON input",
+    // while one Apple refused (a 4xx with `{"errors": [...]}`) comes back
+    // looking fine. Writes go through MusicKit's own request builder
+    // instead, which signs the request the same way but leaves the body
+    // alone, and judge the outcome by the status. `body` is a plain object:
+    // the builder serializes it and sets the JSON content type, which a
+    // pre-stringified body would not get.
+    async function apiWrite(path, params, options) {
+        const mk = getMusicKit();
+        if (!mk) throw new Error('MusicKit not initialized');
+        const client = mk.api && mk.api.client;
+        if (!client || typeof client.createRequest !== 'function') {
+            throw new Error('MusicKit request client unavailable');
+        }
+        const res = await client.createRequest(path, {
+            params: params || {},
+            method: options.method,
+            body: options.body
+        }).send();
+        if (!res.ok) throw new Error(await describeFailure(res));
+        return { ok: true };
+    }
+
+    // "HTTP 403 Forbidden: No active subscription", or just the status line
+    // when the body is not Apple's error shape.
+    async function describeFailure(res) {
+        let detail = res.statusText || '';
+        try {
+            const body = JSON.parse(await res.text());
+            const err = body && body.errors && body.errors[0];
+            if (err) detail = [err.title, err.detail].filter(Boolean).join(': ');
+        } catch (e) {
+            // Not JSON; the status line is all there is.
+        }
+        return 'HTTP ' + res.status + (detail ? ' ' + detail : '');
+    }
+
     function formatDuration(ms) {
         if (!ms || ms <= 0) return '0:00';
         const totalSec = Math.floor(ms / 1000);
@@ -351,21 +390,18 @@
         rating: async function (kind, id, love) {
             const path = '/v1/me/ratings/' + kind + 's/' + id;
             if (love) {
-                await apiCall(path, {}, {
+                return await apiWrite(path, {}, {
                     method: 'PUT',
-                    body: JSON.stringify({ type: 'ratings', attributes: { value: 1 } })
+                    body: { type: 'ratings', attributes: { value: 1 } }
                 });
-            } else {
-                await apiCall(path, {}, { method: 'DELETE' });
             }
-            return { ok: true };
+            return await apiWrite(path, {}, { method: 'DELETE' });
         },
 
         addToLibrary: async function (kind, id) {
             const query = {};
             query['ids[' + kind + 's]'] = id;
-            await apiCall('/v1/me/library', query, { method: 'POST' });
-            return { ok: true };
+            return await apiWrite('/v1/me/library', query, { method: 'POST' });
         },
 
         playlists: async function () {
@@ -384,11 +420,10 @@
 
         addToPlaylist: async function (playlistId, songId) {
             const path = '/v1/me/library/playlists/' + playlistId + '/tracks';
-            await apiCall(path, {}, {
+            return await apiWrite(path, {}, {
                 method: 'POST',
-                body: JSON.stringify({ data: [{ id: songId, type: 'songs' }] })
+                body: { data: [{ id: songId, type: 'songs' }] }
             });
-            return { ok: true };
         },
 
         lyrics: async function (catalogSongId) {
