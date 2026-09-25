@@ -77,8 +77,7 @@ export class PlayerBar {
         this._start.connect('clicked', () => this._startEngine());
         this.actor.add_child(this._start);
 
-        this._transport = new Transport({player, prefix: 'mm-player-bar'});
-        this._transport.actor.add_style_class_name('mm-player-bar-center');
+        this._transport = new Transport({player});
         this.actor.add_child(this._transport.actor);
 
         player.connectObject('changed', () => this._render(), this);

@@ -409,11 +409,11 @@ export class DetailView {
     }
 
     _buildTabs() {
-        const tabs = new St.BoxLayout({style_class: 'mm-tabs', x_expand: true});
+        const tabs = new St.BoxLayout({style_class: 'mm-group-tabs', x_expand: true});
         this._groups.forEach((group, i) => {
             const tab = new St.Button({
                 // The theme's button: `:checked` is what marks the open tab.
-                style_class: 'button mm-tab',
+                style_class: 'button mm-group-tab',
                 label: group.name,
                 toggle_mode: true,
                 reactive: true,

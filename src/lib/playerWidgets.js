@@ -2,11 +2,9 @@
 // transport row (shuffle, previous, play/pause, next, repeat) over a scrubber
 // with the elapsed and remaining time, and a square of cover art fetched from
 // the URL MPRIS hands over. Both follow one Player's 'changed' and 'position'
-// signals directly, so a view only places them.
-//
-// The stylesheet's classes are the view's own, under its `prefix`
-// (`mm-player-bar` or `mm-now-playing`): `-transport`, `-btn`, `-play`,
-// `-scrubber` and `-time`, so each keeps the sizes it already has.
+// signals directly, so a view only places them. One set of stylesheet
+// classes (`mm-transport*`, `mm-scrubber`, `mm-time`) serves both; `large`
+// adds `mm-transport-large`, the now-playing view's size up.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -24,23 +22,24 @@ const REPEAT_ICON = {
 };
 
 export class Transport {
-    constructor({player, prefix}) {
+    constructor({player, large = false}) {
         this._player = player;
         this._scrubbing = false;
         this._lengthUs = 0;
 
         this.actor = new St.BoxLayout({
+            style_class: large ? 'mm-transport mm-transport-large' : 'mm-transport',
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        const button = (icon, name, styleClass = `icon-button ${prefix}-btn`) =>
+        const button = (icon, name, styleClass = 'icon-button mm-transport-btn') =>
             createIconButton(icon, {styleClass, accessibleName: name});
         this._shuffle = button('media-playlist-shuffle-symbolic', 'Shuffle');
         this._previous = button('media-skip-backward-symbolic', 'Previous');
-        this._play = button('media-playback-start-symbolic', 'Play', `icon-button ${prefix}-play`);
+        this._play = button('media-playback-start-symbolic', 'Play', 'icon-button mm-transport-play');
         this._next = button('media-skip-forward-symbolic', 'Next');
         this._repeat = button('media-playlist-repeat-symbolic', 'Repeat');
         // A horizontal box stretches its children to its height, which pulls
@@ -53,16 +52,16 @@ export class Transport {
         this._next.connect('clicked', () => player.next());
         this._repeat.connect('clicked', () => this._toggle(this._repeat, player.cycleRepeat()));
 
-        const row = new St.BoxLayout({style_class: `${prefix}-transport`, x_align: Clutter.ActorAlign.CENTER});
+        const row = new St.BoxLayout({style_class: 'mm-transport-row', x_align: Clutter.ActorAlign.CENTER});
         for (const b of [this._shuffle, this._previous, this._play, this._next, this._repeat])
             row.add_child(b);
         this.actor.add_child(row);
 
         // Live feedback on the labels while dragging; the seek itself fires
         // once, on release, so a fast drag does not flood the engine.
-        const scrubber = new St.BoxLayout({style_class: `${prefix}-scrubber`, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
-        this._elapsed = new St.Label({style_class: `${prefix}-time`, text: '0:00'});
-        this._remaining = new St.Label({style_class: `${prefix}-time`, text: '0:00'});
+        const scrubber = new St.BoxLayout({style_class: 'mm-scrubber', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        this._elapsed = new St.Label({style_class: 'mm-time', text: '0:00'});
+        this._remaining = new St.Label({style_class: 'mm-time', text: '0:00'});
         this._slider = new Slider(0);
         this._slider.x_expand = true;
         this._slider.connect('drag-begin', () => (this._scrubbing = true));

@@ -63,13 +63,13 @@ export class NowPlayingView {
             meta.add_child(label);
         this.actor.add_child(meta);
 
-        this._transport = new Transport({player, prefix: 'mm-now-playing'});
-        this._transport.actor.add_style_class_name('mm-now-playing-controls');
+        this._transport = new Transport({player, large: true});
         this.actor.add_child(this._transport.actor);
 
-        const tabs = new St.BoxLayout({style_class: 'mm-now-playing-tabs', x_align: Clutter.ActorAlign.CENTER});
-        this._lyricsTab = new St.Button({style_class: 'mm-now-playing-tab', label: 'Lyrics', can_focus: true, track_hover: true, checked: true});
-        this._queueTab = new St.Button({style_class: 'mm-now-playing-tab', label: 'Up Next', can_focus: true, track_hover: true});
+        // The same pill the library's header switches sections with.
+        const tabs = new St.BoxLayout({style_class: 'mm-tabs', x_align: Clutter.ActorAlign.CENTER});
+        this._lyricsTab = new St.Button({style_class: 'mm-tab', label: 'Lyrics', can_focus: true, track_hover: true, checked: true});
+        this._queueTab = new St.Button({style_class: 'mm-tab', label: 'Up Next', can_focus: true, track_hover: true});
         this._lyricsTab.connect('clicked', () => this._selectTab('lyrics'));
         this._queueTab.connect('clicked', () => this._selectTab('queue'));
         tabs.add_child(this._lyricsTab);

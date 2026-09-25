@@ -314,7 +314,7 @@ export function createPill(text, styleClass, style = null) {
 // (not `track_hover`, and no rule keys a descendant off the row's own
 // `:hover` — see the Gotchas). Returns the row with `setNowPlaying(bool)`
 // attached, for the player to mark whichever row is currently playing.
-export function createRow({index, title, subtitle, explicit = false, duration, size, nowPlaying = false, onActivate, onMenu}) {
+export function createRow({index, title, subtitle, explicit = false, duration, nowPlaying = false, onActivate, onMenu}) {
     const row = new St.Button({
         // The theme's flat button: hover, focus and pressed come with it, and
         // the inline radius below overrides the one it brings.
@@ -399,8 +399,6 @@ export function createRow({index, title, subtitle, explicit = false, duration, s
         content.add_child(titleLine);
     }
 
-    if (size)
-        content.add_child(new St.Label({text: size, style_class: 'mm-row-size', y_align: Clutter.ActorAlign.CENTER}));
     if (duration)
         content.add_child(new St.Label({text: duration, style_class: 'mm-row-duration', y_align: Clutter.ActorAlign.CENTER}));
 
