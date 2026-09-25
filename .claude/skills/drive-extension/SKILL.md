@@ -36,9 +36,9 @@ walkthrough is **one** tool call, and it stops at the first failing step:
 
 ```bash
 ./scripts/nested.sh do \
-  "say Opening the first show" "click 120 275" "wait 0.6" \
-  "say Switching to season 2"  "click 460 374" "wait 0.3" \
-  "shot $S/season2.png"
+  "say Opening the first album" "click 120 275" "wait 0.6" \
+  "say Playing track 2"         "click 460 374" "wait 0.3" \
+  "shot $S/album.png"
 ```
 
 | Step | Does |
@@ -59,8 +59,8 @@ one-off; prefer `do`. Other commands: `status`, `reload`, `logs [N] [--all]`,
 ## Screenshots for the docs
 
 `docs/screenshots/` — the README's images — are taken in
-`./scripts/nested.sh start --clean --demo`: settings of its own with only Media
-Libraries enabled and the real session's look copied in (so GNOME's default
+`./scripts/nested.sh start --clean --demo`: settings of its own with only Music
+Menu enabled and the real session's look copied in (so GNOME's default
 wallpaper, and the library button in the overview's dash at ≈ (960, 838)), and
 the made-up library `scripts/demo_library.py` draws, pointed at through the
 session's `XDG_CACHE_HOME` — never the user's own collection, which is not for
@@ -93,29 +93,33 @@ way a login does. Edits to `extension.js` or `metadata.json` *need* one.
 Measure from a fresh screenshot if the columns setting, enabled sections, accent or
 geometry changed; these are what the layout gives with the defaults. There is one
 button, beside Show Apps — Show Apps ≈ (30, 875), the library button ≈ (90, 875),
-tooltip "Videos" — and pressing it is the only way in everywhere; there is no home
+tooltip "Music" — and pressing it is the only way in everywhere; there is no home
 menu and no per-section button.
 
 - **`desktop` / `workspaces`** (`library-opens-in`): pressing the button draws the
   library — tabs over a grid — on the wallpaper. Header strip y ≈ 83: tabs centred
-  (TV Shows ≈ x 765, Films ≈ x 846), Settings ≈ (1508, 83), Close ≈ (1553, 83).
-  Grid rows from y ≈ 300, first poster ≈ (325, 300). Opening an item swaps the
-  tabs for a Back button at (48, 83). In `desktop` the button (or Close, or
-  Escape) puts the library away again on the same workspace, no slide; pressed
-  on another workspace it moves there rather than opening a second copy. In
-  `workspaces` the button claims a workspace and slides to it; closing it
-  slides back to wherever it was opened from and gives the claimed one up.
-  Check which mode you are in by cropping the workspace indicator:
+  (Listen Now, Albums, Artists, Playlists, Radio), Settings ≈ (1508, 83), Close ≈ (1553, 83).
+  Grid rows from y ≈ 300, first tile ≈ (325, 300). Square album tiles, round artist
+  tiles. Opening an item swaps the tabs for a Back button at (48, 83). In `desktop`
+  the button (or Close, or Escape) puts the library away again on the same
+  workspace, no slide; pressed on another workspace it moves there rather than
+  opening a second copy. In `workspaces` the button claims a workspace and slides
+  to it; closing it slides back to wherever it was opened from and gives the claimed
+  one up. Check which mode you are in by cropping the workspace indicator:
   `shot F 0 0 140 30`.
 - **A mode change leaves the active workspace where it was**, so after
   switching `library-opens-in` from `workspaces` to `desktop` you may be
   sitting on a workspace that is no longer one of ours and see bare wallpaper.
   Press the button again, or `stop` + `start`.
-- **Detail pane** (on the surface): Back (48, 83); group tabs y ≈ 374 from
-  x ≈ 372; rows from y ≈ 430 in ≈ 54 px steps; Play (177, 562).
+- **Detail pane** (on the surface): Back (48, 83); album/playlist art on the left;
+  title, artist, genre and year, Play/Shuffle buttons; track list on the right
+  (number, title, explicit badge, duration, `•••`) with rows from y ≈ 430 in ≈ 54 px steps;
+  Play (177, 562).
+- **Player bar**: a translucent bar along the bottom of the library (art, title/artist,
+  ⏮ ⏯ ⏭, scrubber, time) reflecting playback via MPRIS.
 - **The `menu` library** (`library-opens-in` `menu`): the button opens the
   overview onto the tabs over the grid, in the app-grid slot. Tabs at
-  y ≈ 127 (TV Shows ≈ x 765, Films ≈ x 846), grid rows centred at y ≈ 320 and
+  y ≈ 127 (Listen Now, Albums, Artists, Playlists, Radio), grid rows centred at y ≈ 320 and
   570. The tabs switch sections in place — no overview transition — unless
   another extension's view (Games Menu's) is what is showing there, in which
   case pressing ours closes the overview and reopens it onto ours.
@@ -126,9 +130,8 @@ menu and no per-section button.
   closes it, as does `key Escape` or a second press of the button; picking an
   item opens the detail the same way a desktop or menu pick would, per
   `detail-opens-in`.
-- **Empty section**: its tab shows a centred placeholder with an Open Settings
-  button — normal until that section has been pointed at a folder and
-  scanned.
+- **Empty section**: its tab shows a centred placeholder with an Open Settings / Sync
+  button — normal until that section has been synced.
 
 Switching workspace drops back to whatever that workspace is showing. A slide
 is over in 250 ms and a `shot` takes longer than that to fire, so a frame
@@ -166,7 +169,7 @@ reads as "no change". `logs` hides D-Bus activation and portal chatter; `logs 20
   `enabled-extensions`, so the real session will load it at the next login too.
 - **The one button sits beside Show Apps.** The nested shell loads the real
   session's extensions, so with Dash to Panel on it is in its bottom panel:
-  Show Apps ≈ (30, 875), the library button ≈ (90, 875), tooltip "Videos".
+  Show Apps ≈ (30, 875), the library button ≈ (90, 875), tooltip "Music".
   Without it they are in the overview's dash, further right and higher up —
   reshoot rather than trust a remembered coordinate. `library-opens-in` and
   `detail-opens-in` are dconf settings, so set them before `start` — or with
@@ -223,11 +226,6 @@ reads as "no change". `logs` hides D-Bus activation and portal chatter; `logs 20
   is a real device for the whole machine while it runs; `quit` it when done.
   Controller input is acted on only while a library is up and no window has
   the focus, so drive it with the prefs window closed.
-- **Watched marks are real data.** Ticking an episode in the nested shell (a
-  click on the disc, Mark watched from a key or the pad) writes the real
-  `~/.local/share/music-menu/watched.json` and, with `tracking` =
-  `source`, a `.music-menu-watched.json` into the library folder itself.
-  Don't, or put both back afterwards.
 - **The shell's "Allow inhibiting shortcuts" prompt writes the real permission
   store**, which the nested session shares. If a test has to answer it, delete
   the entry afterwards (`PermissionStore.DeletePermission gnome
