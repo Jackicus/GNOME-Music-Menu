@@ -51,7 +51,8 @@
         const id = item.id || '';
         const playParams = attrs.playParams || item.playParams || {};
         const catalogId = playParams.catalogId || item.catalogId || (id.startsWith('l.') || id.startsWith('i.') ? null : id) || null;
-        const durationMs = item.playbackDuration ? Math.round(item.playbackDuration * 1000) : (attrs.durationInMillis || 0);
+        // MusicKit v3 reports playbackDuration in milliseconds already (a 30 s preview is 30000).
+        const durationMs = attrs.durationInMillis || Math.round(item.playbackDuration || 0);
 
         return {
             id: id,
