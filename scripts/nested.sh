@@ -8,10 +8,11 @@
 #   ./scripts/nested.sh start --headless [WxH]
 #                                     no mirror window; screenshots are the only view
 #   ./scripts/nested.sh start --clean [--demo] [WxH]
-#                                     a settings database of its own: only Media
-#                                     Libraries enabled, the real session's look copied
+#                                     a settings database of its own: only Music
+#                                     Menu enabled, the real session's look copied
 #                                     in, nothing written to ~/.config/dconf/user. With
 #                                     --demo, the made-up library of demo_library.py
+#                                     (Listen Now, Albums, Artists, Playlists, Radio)
 #                                     instead of yours -- what the README's
 #                                     screenshots (docs/screenshots/) are taken of
 #   ./scripts/nested.sh do "STEP" "STEP"...
@@ -123,8 +124,8 @@ nested_env() {
 }
 
 # --clean: a dconf profile of the nested session's own. Its writable database
-# starts empty every time, over a read-only one seeded here with Media
-# Libraries alone in enabled-extensions and the real session's look, so the
+# starts empty every time, over a read-only one seeded here with Music
+# Menu alone in enabled-extensions and the real session's look, so the
 # nested shell shows nothing of the other extensions and matches the desktop
 # it is screenshotted for. The real ~/.config/dconf/user is never opened for
 # writing -- which also keeps it out of the way of any other project's nested
@@ -238,9 +239,11 @@ cmd_start() {
         extra_env+=(DCONF_PROFILE="$PROFILE_FILE")
     fi
     if (( demo )); then
-        python3 "$REPO_DIR/scripts/demo_library.py" "$DEMO_CACHE" >/dev/null \
+        mkdir -p "$DEMO_CACHE/music-menu"
+        XDG_CACHE_HOME="$DEMO_CACHE" MUSIC_MENU_CACHE="$DEMO_CACHE/music-menu" \
+            python3 "$REPO_DIR/scripts/demo_library.py" --out-dir "$DEMO_CACHE/music-menu" >/dev/null \
             || die "Could not make the demo library (scripts/demo_library.py)."
-        extra_env+=(XDG_CACHE_HOME="$DEMO_CACHE")
+        extra_env+=(XDG_CACHE_HOME="$DEMO_CACHE" MUSIC_MENU_CACHE="$DEMO_CACHE/music-menu")
     fi
 
     info "Starting nested GNOME Shell (headless, $geometry$( (( clean )) && echo ', own settings, no other extensions')$( (( demo )) && echo ', demo library'))..."
@@ -382,7 +385,7 @@ cmd_session_end() {
 
 cmd_do() {
     require_running
-    [[ $# -gt 0 ]] || die "Usage: ./scripts/nested.sh do \"say Opening a show\" \"click 125 280\" \"wait 1\" shot"
+    [[ $# -gt 0 ]] || die "Usage: ./scripts/nested.sh do \"say Opening an album\" \"click 125 280\" \"wait 1\" shot"
     driver batch "$@"
 }
 

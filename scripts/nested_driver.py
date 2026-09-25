@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Screenshot and input driver for the nested GNOME Shell.
+"""Screenshot and input driver for the nested GNOME Shell running Music Menu.
 
 Always invoked through scripts/nested.sh, which points DBUS_SESSION_BUS_ADDRESS at
 the nested shell's private bus and exports NESTED_GEOMETRY / NESTED_RUN_DIR.
@@ -14,10 +14,10 @@ below would fail there anyway).
 
 Steps:
     say TEXT...            flash TEXT as an on-screen banner
-    click X Y              click at desktop coordinates
+    click X Y              click at desktop coordinates (e.g. an album/artist tile, tab, or track row)
     move X Y               move the pointer there without clicking (hover)
     key KEYSYM             Escape, Return, a character, or a chord: Super+Page_Down
-    wait SECONDS           pause, e.g. for a workspace slide to finish
+    wait SECONDS           pause, e.g. for an album pop-up or workspace slide to finish
     shot [FILE [X Y W H]]  screenshot, optionally of one region only
     window FILE            screenshot of the focused window alone, frame
                            and shadow included -- the preferences, say

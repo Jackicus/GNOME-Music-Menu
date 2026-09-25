@@ -7,8 +7,9 @@
 #   ./scripts/dev.sh reload     recompile schemas and disable/enable the extension
 #   ./scripts/dev.sh logs [since]  shell logs; follows unless given e.g. '5 min ago'
 #   ./scripts/dev.sh pack       build a distributable .shell-extension.zip
-#   ./scripts/dev.sh scan [args]   scan every enabled section; passes extra
-#                                  arguments through, e.g. --only films --force
+#   ./scripts/dev.sh sync [args]    sync library from Apple Music (runs am.py sync)
+#   ./scripts/dev.sh signin         open visible Chrome to sign in to Apple Music
+#   ./scripts/dev.sh engine-stop    stop the background Apple Music engine
 #   ./scripts/dev.sh prune      remove superseded builds, keeping the current one
 #   ./scripts/dev.sh uninstall  remove the extension (and stale older builds)
 #   ./scripts/dev.sh status     show what is currently installed and enabled
@@ -150,10 +151,10 @@ cmd_logs() {
     if [[ -n "${1:-}" ]]; then
         info "Music Menu log output since '$1':"
         journalctl -o cat /usr/bin/gnome-shell --since "$1" 2>/dev/null \
-            | grep -iE 'media.libraries' || info "(nothing logged in that window)"
+            | grep -iE 'music.menu|music-menu' || info "(nothing logged in that window)"
     else
         info "Following GNOME Shell logs (Ctrl+C to stop)..."
-        journalctl -f -o cat /usr/bin/gnome-shell | grep --line-buffered -iE 'media.libraries'
+        journalctl -f -o cat /usr/bin/gnome-shell | grep --line-buffered -iE 'music.menu|music-menu'
     fi
 }
 
@@ -178,17 +179,19 @@ cmd_pack() {
     ok "Packed to $out/$UUID.shell-extension.zip"
 }
 
-# Scan every enabled section. The scanner reads the preferences itself
-# (--from-settings), so which setting becomes which flag is decided in exactly
-# one place rather than here and in the preferences' Rescan buttons as well.
-# Extra arguments are passed straight through, e.g. '--only films' or '--force'.
-cmd_scan() {
+cmd_sync() {
     require python3
-    compile_schemas
-    # The API keys are read straight out of the preferences by the scanner,
-    # along with everything else --from-settings covers, so nothing has to be
-    # handed to it here and no key ever reaches a command line.
-    python3 "$SRC_DIR/backend/scan_library.py" --from-settings "$@"
+    python3 "$SRC_DIR/backend/am.py" sync "$@"
+}
+
+cmd_signin() {
+    require python3
+    python3 "$SRC_DIR/backend/am.py" signin "$@"
+}
+
+cmd_engine_stop() {
+    require python3
+    python3 "$SRC_DIR/backend/am.py" engine stop "$@"
 }
 
 # Remove superseded builds of this extension, leaving the current one alone.
@@ -242,17 +245,18 @@ cmd_status() {
     fi
     echo "cache:    $CACHE_DIR$([[ -d "$CACHE_DIR" ]] || echo ' (absent)')"
     if [[ -f "$CACHE_DIR/library.json" ]]; then
-        # Read through the scanner's own loader rather than restating how the
-        # file is shaped (and how the version 1 format is read) a second time.
         echo "library:  $(python3 -c '
-import sys
-sys.path.insert(0, sys.argv[1])
-from scan_library import load_existing
-s = load_existing(sys.argv[2])
-print(", ".join(f"{len(v)} {k}" for k, v in s.items()) or "empty")' \
-            "$SRC_DIR/backend" "$CACHE_DIR/library.json" 2>/dev/null || echo 'unreadable')"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    sec = data.get("sections", {}) if isinstance(data, dict) else {}
+    print(", ".join(f"{len(sec.get(k, []))} {k}" for k in ("albums", "artists", "playlists", "radio")))
+except Exception:
+    print("unreadable")' \
+            "$CACHE_DIR/library.json" 2>/dev/null || echo 'unreadable')"
     else
-        echo "library:  not scanned yet"
+        echo "library:  not synced yet"
     fi
 }
 
@@ -263,17 +267,20 @@ usage() {
 }
 
 case "${1:-}" in
-    link)       cmd_link ;;
-    install)    cmd_install ;;
-    reload)     cmd_reload ;;
-    logs)       cmd_logs "${2:-}" ;;
-    pack)       cmd_pack ;;
-    scan)       shift; cmd_scan "$@" ;;
-    prune)      cmd_prune ;;
-    uninstall)  cmd_uninstall ;;
-    status)     cmd_status ;;
-    stalls)     shift; cmd_stalls "$@" ;;
-    clean)      cmd_clean ;;
+    link)        cmd_link ;;
+    install)     cmd_install ;;
+    reload)      cmd_reload ;;
+    logs)        cmd_logs "${2:-}" ;;
+    pack)        cmd_pack ;;
+    sync)        shift; cmd_sync "$@" ;;
+    signin)      shift; cmd_signin "$@" ;;
+    engine-stop) shift; cmd_engine_stop "$@" ;;
+    scan)        shift; cmd_sync "$@" ;;
+    prune)       cmd_prune ;;
+    uninstall)   cmd_uninstall ;;
+    status)      cmd_status ;;
+    stalls)      shift; cmd_stalls "$@" ;;
+    clean)       cmd_clean ;;
     ""|-h|--help|help) usage ;;
-    *)          die "Unknown command '$1'. Run './scripts/dev.sh help'." ;;
+    *)           die "Unknown command '$1'. Run './scripts/dev.sh help'." ;;
 esac
