@@ -132,6 +132,14 @@
     text-align: center;
 }
 
+/* The artist name under an album/playlist tile's title (mediaGrid.js
+ * PosterIcon) — the second line the shell's own BaseIcon never has. */
+.mm-tile-subtitle {
+    font-size: 0.82em;
+    color: rgba(250, 250, 251, 0.55);
+    text-align: center;
+}
+
 /* ---- Detail pane ------------------------------------------------------- */
 
 .mm-pane {
@@ -158,26 +166,20 @@
     padding: 26px;
 }
 
-/* TMDB backdrop behind the pane content, dimmed so the type stays legible. */
-.mm-backdrop {
-    border-radius: 30px;
-}
-
-.mm-backdrop-veil {
-    border-radius: 30px;
-    background-gradient-direction: horizontal;
-    background-gradient-start: rgba(20, 20, 24, 0.92);
-    background-gradient-end: rgba(20, 20, 24, 0.7);
-}
-
-.mm-tagline {
-    font-size: 1.02em;
-    font-style: italic;
-    color: rgba(250, 250, 251, 0.7);
-}
-
 .mm-detail-side {
     spacing: 12px;
+}
+
+/* Play and Shuffle, side by side under the artwork. A station's lone big
+ * Play button (mm-action-big) sits in this same slot instead. */
+.mm-detail-actions {
+    spacing: 10px;
+}
+
+.mm-action-big {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    font-size: 1.09em;
 }
 
 .mm-hero {
@@ -195,28 +197,16 @@
     color: #fafafb;
 }
 
-.mm-facts {
-    spacing: 8px;
+/* The artist, under the title — an album's or playlist's subtitle. */
+.mm-detail-subtitle {
+    font-size: 1.09em;
+    color: rgba(250, 250, 251, 0.75);
 }
 
-.mm-fact {
-    font-size: 0.82em;
-    font-weight: bold;
-    color: rgba(250, 250, 251, 0.85);
-    background-color: rgba(250, 250, 251, 0.1);
-    border-radius: 9999px;
-    padding: 4px 12px;
-}
-
-.mm-fact-rating {
-    color: st-lighten(-st-accent-color, 30%);
-    background-color: st-transparentize(-st-accent-color, 0.8);
-}
-
-.mm-fact-tag {
-    color: rgba(250, 250, 251, 0.65);
-    background-color: rgba(250, 250, 251, 0.06);
-    font-weight: normal;
+/* "genre · year · countLabel", one line rather than pills. */
+.mm-facts-line {
+    font-size: 0.886em;
+    color: rgba(250, 250, 251, 0.55);
 }
 
 .mm-summary {
@@ -306,22 +296,34 @@
     text-align: center;
 }
 
-/* The disc as a watched toggle: a tick on the accent once it is watched. */
-.mm-row-watch {
+/* The number and the play glyph sit on top of each other in the index bin;
+ * hover, focus and the playing row's own class decide which one is opaque,
+ * so createRow never has to poll either by hand. */
+.mm-row-play-icon {
+    color: rgba(250, 250, 251, 0.85);
+    opacity: 0;
     transition-duration: 120ms;
 }
 
-.mm-row-watch:hover {
-    background-color: rgba(250, 250, 251, 0.16);
+.mm-row:hover .mm-row-number,
+.mm-row:focus .mm-row-number {
+    opacity: 0;
 }
 
-.mm-row-watch:checked {
-    color: -st-accent-fg-color;
-    background-color: -st-accent-color;
+.mm-row:hover .mm-row-play-icon,
+.mm-row:focus .mm-row-play-icon {
+    opacity: 1;
 }
 
-.mm-row-watch:checked:hover {
-    background-color: st-lighten(-st-accent-color, 8%);
+/* The row currently playing keeps its glyph up without a pointer near it, in
+ * the accent, exactly as the theme already uses -st-accent-color elsewhere. */
+.mm-row-playing .mm-row-number {
+    opacity: 0;
+}
+
+.mm-row-playing .mm-row-play-icon {
+    opacity: 1;
+    color: -st-accent-color;
 }
 
 .mm-row-text {
@@ -355,8 +357,24 @@
     margin-right: 16px;
 }
 
-.mm-row-icon {
-    color: rgba(250, 250, 251, 0.3);
+.mm-row-duration {
+    font-size: 0.82em;
+    color: rgba(250, 250, 251, 0.5);
+    font-feature-settings: "tnum";
+    margin-right: 12px;
+}
+
+/* The `...` button: the theme's own round icon-button, dimmed until the row
+ * is hovered or focused so a track list does not read as a column of dots. */
+.mm-row-menu {
+    opacity: 0;
+    transition-duration: 120ms;
+}
+
+.mm-row:hover .mm-row-menu,
+.mm-row:focus .mm-row-menu,
+.mm-row-menu:focus {
+    opacity: 1;
 }
 
 /* ---- Empty state ------------------------------------------------------- */
@@ -446,6 +464,11 @@
     font-weight: bold;
     border-radius: 9999px;
     padding: 4px 12px;
+}
+
+/* Center zone: the transport row stacked over the scrubber row. */
+.mm-player-bar-center {
+    spacing: 4px;
 }
 
 /* Center transport controls */
@@ -569,6 +592,38 @@
 
 .mm-now-playing-transport {
     spacing: 16px;
+}
+
+/* Shuffle, previous, next and repeat around the big play circle. */
+.mm-now-playing-btn {
+    border-radius: 9999px;
+    padding: 10px;
+    color: rgba(250, 250, 251, 0.75);
+    transition-duration: 120ms;
+}
+
+.mm-now-playing-btn StIcon {
+    icon-size: 20px;
+}
+
+.mm-now-playing-btn:hover {
+    color: #fafafb;
+    background-color: rgba(250, 250, 251, 0.1);
+}
+
+.mm-now-playing-btn:focus {
+    color: #fafafb;
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+.mm-now-playing-btn.active,
+.mm-now-playing-btn:checked {
+    color: -st-accent-color;
+    background-color: st-transparentize(-st-accent-color, 0.85);
+}
+
+.mm-now-playing-btn:insensitive {
+    color: rgba(250, 250, 251, 0.25);
 }
 
 .mm-now-playing-play {
@@ -738,4 +793,106 @@
 
 /* === Listen Now shelves (shelfView.js) === */
 
+.mm-shelf-scroll {
+    -st-vfade-offset: 24px;
+}
+
+.mm-shelf-list {
+    spacing: 32px;
+    padding: 4px 4px 24px 4px;
+}
+
+.mm-shelf {
+    spacing: 12px;
+}
+
+.mm-shelf-header {
+    spacing: 12px;
+}
+
+.mm-shelf-title {
+    font-size: 1.23em;
+    font-weight: 800;
+    color: #fafafb;
+}
+
+.mm-shelf-see-all {
+    font-size: 0.886em;
+    font-weight: bold;
+    color: -st-accent-color;
+    padding: 4px 8px;
+    border-radius: 9999px;
+}
+
+.mm-shelf-see-all:hover {
+    color: st-lighten(-st-accent-color, 15%);
+    background-color: st-transparentize(-st-accent-color, 0.88);
+}
+
+.mm-shelf-see-all:focus {
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+/* The row scrolls sideways with no visible bar of its own — .hfade is the
+ * shell's own edge-fade class (switcherPopup.js), so the row reads as
+ * continuing off both sides rather than stopping dead against the surface. */
+.mm-shelf-row {
+    -st-hfade-offset: 24px;
+}
+
+.mm-shelf-row-box {
+    spacing: 16px;
+    padding: 4px 4px 12px 4px;
+}
+
+.mm-shelf-grid {
+    padding: 4px 4px 12px 4px;
+}
+
+/* A tile's own focus ring: it is a plain button, not `.button`, so nothing
+ * paints one unless this does. Never a box-shadow on the artwork itself
+ * (Gotchas) — this sits on the tile, one level up, around the whole stack. */
+.mm-shelf-tile {
+    border-radius: 12px;
+    padding: 6px;
+}
+
+.mm-shelf-tile:focus {
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+.mm-shelf-tile-content {
+    spacing: 8px;
+}
+
+.mm-shelf-tile-title {
+    font-size: 0.95em;
+    font-weight: bold;
+    color: #fafafb;
+}
+
+.mm-shelf-tile-subtitle {
+    font-size: 0.82em;
+    color: rgba(250, 250, 251, 0.6);
+}
+
 /* === Item menu (itemMenu.js) === */
+
+/* The menu itself is the shell's own .popup-menu box pointer (appMenu.js
+ * adds no chrome of its own either); this class only nudges its type size so
+ * it reads at the same scale as the rest of the extension. */
+.mm-item-menu .popup-menu-item {
+    font-size: 0.95em;
+}
+
+.mm-item-menu .popup-menu-icon {
+    color: st-transparentize(-st-accent-color, 0.1);
+}
+
+/* "Loading…" in the Add to Playlist submenu, and "No playlists" if the
+ * account has none: a plain inactive row, not a real choice, so it reads
+ * dimmer and in italics rather than looking like a missed click. */
+.mm-item-menu-hint {
+    font-style: italic;
+    color: rgba(250, 250, 251, 0.5);
+}

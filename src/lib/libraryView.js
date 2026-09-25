@@ -9,18 +9,32 @@
 // to go: St navigates within the nearest group and no further. So the view
 // takes that one step itself, up onto the tabs, and the step back down into
 // the grid — which lets a remote with nothing but arrows switch libraries.
+//
+// Listen Now is not a grid: its tab hosts a ShelfView, a vertical scroll of
+// horizontal shelves, over the same items every other tab would show as tiles.
+// It has no page-based keyboard shape of its own (no `atTopRow`, no paging),
+// so the few places that lean on a grid's extra methods ask for them with `?.`
+// rather than assuming every tab's view is one.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 
+import {ensureStyleDeep} from './anim.js';
 import {createMediaView} from './mediaGrid.js';
-import {createEmptyState, createHeader} from './widgets.js';
+import {ShelfView} from './shelfView.js';
+import {createEmptyState, createHeader, createIconButton} from './widgets.js';
+import * as amctl from './amctl.js';
 
 // `.mm-header`'s height (52px) plus its margin-bottom (24px) in stylesheet.css
 // — keep in step — taken off the top before anything under it is sized.
 // Logical px.
 export const HEADER_ALLOWANCE = 76;
+
+// The physical size of a shelf's tiles (ShelfView's `tileSize`) — a square
+// somewhere between a grid's smallest and largest cover, since a shelf has no
+// `columns`/`rows` setting of its own to size against.
+const SHELF_TILE = 168;
 
 export class LibraryView {
     // `sections` are the tabs, in order, and `active` the one to show first.
@@ -28,7 +42,9 @@ export class LibraryView {
     // px. `onSwitch` hears of a tab chosen here, so whoever holds the view can
     // open on the same one next time; `onBack` and `end` go to the header
     // (createHeader), and `onOpenSettings` is the empty state's way out.
-    constructor({sections, itemsFor, active, width, height, columns, rows, onActivate, onSwitch, onBack, end, onOpenSettings}) {
+    // `onContextMenu` is a tile's secondary click or Menu key, in a grid and
+    // in a shelf alike.
+    constructor({sections, itemsFor, active, width, height, columns, rows, onActivate, onContextMenu, onSwitch, onBack, end, onOpenSettings}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._width = width;
@@ -36,19 +52,32 @@ export class LibraryView {
         this._columns = columns;
         this._rows = rows;
         this._onActivate = onActivate;
+        this._onContextMenu = onContextMenu;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
         // A section's grid, or its empty state, by key; `view` is null for
-        // the empty state.
+        // the empty state, and — for a grid or a shelf — is the object that
+        // holds the keyboard behaviour, not necessarily `actor` itself.
         this._pages = new Map();
         this._prebuildIdle = 0;
         this._key = this._sectionFor(active)?.key ?? null;
+        // The footer slot under the grid (a player bar), and how much height
+        // it takes off every page's budget.
+        this._footer = null;
+        this._footerHeight = 0;
+        this._syncing = false;
 
         this.actor = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
+
+        // A library's own way to ask for a fresh library.json without
+        // waiting for the automatic timer (app.js) or the preferences.
+        this._syncButton = createIconButton('view-refresh-symbolic', {accessibleName: 'Sync library'});
+        this._syncButton.connect('clicked', () => this._sync());
+
         this.header = createHeader({
             sections,
             active: this._key,
@@ -57,7 +86,7 @@ export class LibraryView {
                 this._onSwitch?.(key);
             },
             onBack,
-            end,
+            end: [...(end ?? []), this._syncButton],
         });
         this.actor.add_child(this.header.actor);
 
@@ -81,6 +110,11 @@ export class LibraryView {
     }
 
     destroy() {
+        // The footer (a player bar) is a singleton shared across rebuilds:
+        // detached rather than taken down with this instance's actors.
+        if (this._footer && this._footer.get_parent() === this.actor)
+            this.actor.remove_child(this._footer);
+        this._footer = null;
         this.actor.destroy();
     }
 
@@ -89,7 +123,7 @@ export class LibraryView {
         return this._key;
     }
 
-    // Its grid, or null when it has nothing in it.
+    // Its grid or shelf, or null when it has nothing in it.
     get currentView() {
         return this._pages.get(this._key)?.view ?? null;
     }
@@ -104,7 +138,7 @@ export class LibraryView {
         for (const other of this._pages.values())
             other.actor.visible = other === page;
         if (reveal)
-            page.view?.reveal();
+            page.view?.reveal?.();
     }
 
     // The rest of the tabs, built ahead one to an idle while nothing is
@@ -124,18 +158,55 @@ export class LibraryView {
         });
     }
 
+    // The slot under the grid, for a player bar (app.js), or null to clear
+    // it. The grid's own budget shrinks by whatever height the footer takes,
+    // so every page already built has to be built again against the new one.
+    setFooter(actor = null) {
+        if (actor === this._footer)
+            return;
+        if (this._footer)
+            this.actor.remove_child(this._footer);
+        this._footer = actor;
+        if (actor)
+            this.actor.add_child(actor);
+        // A freshly parented actor has no resolved style yet (anim.js), and
+        // its preferred height is exactly what a page's budget needs.
+        ensureStyleDeep(this.actor);
+        this._footerHeight = actor ? Math.max(0, actor.get_preferred_height(-1)[1]) : 0;
+        for (const page of this._pages.values())
+            page.actor.destroy();
+        this._pages.clear();
+        if (this._key)
+            this.show(this._key);
+    }
+
     // Where the keyboard starts: the grid's first tile on show, or, with
     // nothing in the section, whatever the empty state offers.
     focusFirst() {
-        const view = this.currentView;
-        if (view)
-            return view.focusFirst();
-        return this._pages.get(this._key)?.actor
-            .navigate_focus(null, St.DirectionType.TAB_FORWARD, false) ?? false;
+        const page = this._pages.get(this._key);
+        if (page?.view?.focusFirst)
+            return page.view.focusFirst();
+        return page?.actor.navigate_focus(null, St.DirectionType.TAB_FORWARD, false) ?? false;
     }
 
     _sectionFor(key) {
         return this._sections.find(s => s.key === key) ?? this._sections[0] ?? null;
+    }
+
+    // A fresh library.json without waiting for the automatic timer.
+    _sync() {
+        if (this._syncing)
+            return;
+        this._syncing = true;
+        this._syncButton.reactive = false;
+        this._syncButton.opacity = 128;
+        amctl.run(['sync'])
+            .catch(e => console.warn(`[Music Menu] Sync failed: ${e.message}`))
+            .finally(() => {
+                this._syncing = false;
+                this._syncButton.reactive = true;
+                this._syncButton.opacity = 255;
+            });
     }
 
     _page(key) {
@@ -145,27 +216,39 @@ export class LibraryView {
         const section = this._sections.find(s => s.key === key);
         const items = this._itemsFor(key);
         const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        const height = this._height - HEADER_ALLOWANCE * scale - this._footerHeight;
         let view = null;
         let actor;
-        if (items.length) {
-            actor = view = createMediaView({
-                section,
-                items,
-                width: this._width,
-                height: this._height - HEADER_ALLOWANCE * scale,
-                columns: this._columns,
-                rows: this._rows,
-                onActivate: this._onActivate,
-            });
-        } else {
+        if (!items.length) {
             // A section with nothing in it says so, rather than showing an
-            // empty grid.
+            // empty grid or shelf.
             actor = createEmptyState({
                 icon: section.icon,
                 title: `No ${section.title.toLowerCase()} yet`,
                 hint: section.emptyHint,
                 actionLabel: this._onOpenSettings ? 'Open Settings' : null,
                 onAction: this._onOpenSettings,
+            });
+        } else if (section.shelves) {
+            // Listen Now: a vertical scroll of horizontal shelves, not a grid.
+            const shelf = new ShelfView({
+                shelves: items,
+                tileSize: Math.round(SHELF_TILE * scale),
+                onActivate: (item, sourceActor) => this._onActivate?.(key, item, sourceActor),
+                onContextMenu: (item, sourceActor) => this._onContextMenu?.(item, sourceActor),
+            });
+            view = shelf;
+            actor = shelf.actor;
+        } else {
+            actor = view = createMediaView({
+                section,
+                items,
+                width: this._width,
+                height,
+                columns: this._columns,
+                rows: this._rows,
+                onActivate: this._onActivate,
+                onContextMenu: this._onContextMenu,
             });
         }
         this.stack.add_child(actor);
@@ -177,16 +260,18 @@ export class LibraryView {
     // The two steps between the tabs and the grid under them that St's own
     // navigation cannot take (see the top of this file). Only while the grid
     // is what shows: an open item has the stack to itself, and the header's
-    // Back button then leads down into that.
+    // Back button then leads down into that. A shelf has no top row of its
+    // own to step up from, so it simply does not answer `atTopRow`.
     _onKeyPress(event) {
-        const view = this.currentView;
-        if (!view?.visible)
+        const page = this._pages.get(this._key);
+        if (!page?.actor.visible)
             return Clutter.EVENT_PROPAGATE;
+        const view = page.view;
         const focus = global.stage.get_key_focus();
         const symbol = event.get_key_symbol();
-        if (symbol === Clutter.KEY_Up && view.atTopRow(focus))
+        if (symbol === Clutter.KEY_Up && view?.atTopRow?.(focus))
             return this.header.focusTabs() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
-        if (symbol === Clutter.KEY_Down && focus && this.header.actor.contains(focus))
+        if (symbol === Clutter.KEY_Down && focus && this.header.actor.contains(focus) && view?.focusFirst)
             return view.focusFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
         return Clutter.EVENT_PROPAGATE;
     }

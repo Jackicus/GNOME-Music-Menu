@@ -34,19 +34,19 @@
 // library's page when it is replacing the grid.
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as Util from 'resource:///org/gnome/shell/misc/util.js';
 import {adjustAnimationTime} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import {Duration, Ease, POP_SCALE, allocateNow, fadeTo, flyClone, rectIn} from './anim.js';
-import {SECTIONS, loadLibrary, libraryPath, migrateOpenCommand, openCommandKey, sectionByKey} from './library.js';
+import {SECTIONS, loadLibrary, libraryPath, enabledSections} from './library.js';
 import {createHeader, createIconButton} from './widgets.js';
-import {setCornerRadius} from './shape.js';
+import {setCornerRadius, PANE_INSET} from './shape.js';
 import {setGridAlign} from './mediaGrid.js';
 import {HEADER_ALLOWANCE, LibraryView} from './libraryView.js';
 import {LibraryButton} from './libraryButton.js';
@@ -55,9 +55,27 @@ import {OverviewPreview} from './overviewPreview.js';
 import {MediaMenu} from './mediaMenu.js';
 import {LibraryWindow} from './libraryWindow.js';
 import {DetailDialog} from './detailDialog.js';
-import {Tracker} from './tracking.js';
-import {PlaybackWatcher} from './playback.js';
+import {MediaPanel} from './panel.js';
 import {Controls, NAVIGATION_KEYS, handleBoundKey} from './controls.js';
+import {Player} from './player.js';
+import {PlayerBar} from './playerBar.js';
+import {NowPlayingView} from './nowPlaying.js';
+import {openItemMenu} from './itemMenu.js';
+import {MusicSearchProvider} from './searchProvider.js';
+import * as amctl from './amctl.js';
+
+// The section a search result's kind maps onto, for the tab its detail is
+// shown against. A song has no tab of its own; its detail opens as an album
+// would.
+const KIND_TO_SECTION = {
+    album: 'albums', artist: 'artists', playlist: 'playlists', station: 'radio', song: 'albums',
+};
+
+// SECTIONS is a flat list now (no per-video-section registry to import), so
+// the lookup a picked item's key needs is kept here.
+function sectionByKey(key) {
+    return SECTIONS.find(s => s.key === key) ?? SECTIONS[0];
+}
 
 // Gap between the surface and the work-area edges, in logical px.
 const OUTER_MARGIN = 28;
@@ -69,57 +87,25 @@ const WORKSPACE_SLIDE_TIME = 250;
 const LIBRARY = 'library';
 const DETAIL = 'detail';
 
-// Open a file with the command its section names, or the system default app —
-// which is also what a command whose program is not installed gets, since the
-// video sections name VLC by default and not every machine has it.
-//
-// `beforeLaunch` runs just before a file that is there is launched — not a
-// folder, and not a path that has gone — which is only known once the file
-// has been asked what it is.
-function openPath(path, command = '', beforeLaunch = null) {
-    if (!path)
-        return;
-    // This runs in the compositor, and media often lives on a network share or
-    // an automount that has idled out: asked synchronously, the whole desktop
-    // would stand still for as long as the share takes to come back.
-    const file = Gio.File.new_for_path(path);
-    file.query_info_async(
-        'standard::type', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null,
-        (_file, result) => {
-            let isDir = false;
-            let found = false;
-            try {
-                isDir = file.query_info_finish(result).get_file_type() === Gio.FileType.DIRECTORY;
-                found = true;
-            } catch (e) {
-                // Not there: let the launch below say so.
-            }
-            if (found && !isDir)
-                beforeLaunch?.();
-            if (command && !isDir) {
-                // Only the parse can throw here; the spawn reports itself.
-                let argv;
-                try {
-                    [, argv] = GLib.shell_parse_argv(command);
-                } catch (e) {
-                    Main.notifyError(`Could not open ${file.get_basename()}`, e.message);
-                    return;
-                }
-                if (GLib.find_program_in_path(argv[0])) {
-                    Util.spawn([...argv, path]);
-                    return;
-                }
-            }
-            Gio.AppInfo.launch_default_for_uri_async(file.get_uri(),
-                global.create_app_launch_context(0, -1), null, (_source, res) => {
-                    try {
-                        Gio.AppInfo.launch_default_for_uri_finish(res);
-                    } catch (e) {
-                        Main.notifyError(`Could not open ${file.get_basename()}`, e.message);
-                    }
-                });
-        });
-}
+// Now Playing, popped up the way an item's detail is (panel.js) when
+// `detail-opens-in` is not a surface place — a plain host for the shared
+// NowPlayingView, with no tile of its own to zoom out of or die with.
+const NowPlayingPanel = GObject.registerClass(
+class MusicMenuNowPlayingPanel extends MediaPanel {
+    _init({view, size = 0.8}) {
+        super._init({size, dieWithSource: false, inset: PANE_INSET, accessibleName: 'Now Playing'});
+        this._view = view;
+        view.actor.x_expand = true;
+        view.actor.y_expand = true;
+        this._panel.add_child(view.actor);
+    }
+
+    _sizePanel(budget) {
+        this._panel.remove_all_transitions();
+        this._panel.set_size(budget.width, budget.height);
+        this._restSize = [budget.width, budget.height];
+    }
+});
 
 // Is this workspace still one of the manager's? A claimed workspace is
 // removed under us as what claimed it closes, and `Meta.Workspace.index()` on a
@@ -200,15 +186,24 @@ export class MusicMenuApp {
         this._libraryWorkspace = null;
         // And the one the pane was given, when a pick opens in 'workspaces'.
         this._detailWorkspace = null;
-        // What has been watched, read by the detail pane's rows.
-        this._tracker = new Tracker(this._settings);
-        // Which marks them, and resumes what was left halfway.
-        this._playback = new PlaybackWatcher(this._settings, this._tracker);
+        // Follows the engine's MPRIS player; one for the whole extension.
+        this._player = null;
+        // The player bar built into whichever LibraryView's footer is
+        // showing, when the 'player-bar' setting is on.
+        this._playerBar = null;
+        // The full now-playing view, and the popup it opens in when the
+        // library's detail pane is not on the surface.
+        this._nowPlayingView = null;
+        this._nowPlayingPanel = null;
+        // The overview's search entry, backed by am.py search.
+        this._searchProvider = null;
+        this._syncTimer = 0;
         // Remotes, controllers and keys of the user's own (controls.js).
         this._controls = new Controls(this._settings, {
             isActive: () => this._controlsActive(),
             onHome: () => this._closeLibrary(),
             onOpen: () => this._controlsOpen(),
+            onPlayPause: () => this._player?.playPause(),
             currentView: () => this._browser?.currentView ??
                 (this._mode === 'library' ? this._library?.currentView : null),
         });
@@ -218,12 +213,21 @@ export class MusicMenuApp {
     // Lifecycle
     // ------------------------------------------------------------------
     enable() {
-        migrateOpenCommand(this._settings);
+        // lib/ runs from a staged copy (extension.js), so amctl cannot find
+        // backend/am.py relative to itself: it needs the extension's own
+        // directory, not the stage.
+        amctl.setExtensionPath(this._extension.path);
         this._controls.enable();
-        this._tracker.enable();
-        this._playback.enable();
+        this._player = new Player();
+        this._player.connectObject('changed', () => this._syncNowPlayingTrack(), this);
+        this._syncPlayerBar();
+        this._searchProvider = new MusicSearchProvider({
+            onActivate: item => this._activateSearchResult(item),
+        });
+        this._searchProvider.register();
         this._sections = loadLibrary();
         this._build();
+        this._scheduleSync();
 
         global.workspace_manager.connectObject(
             'active-workspace-changed', () => this._onWorkspaceChanged(),
@@ -255,6 +259,13 @@ export class MusicMenuApp {
             ...SECTIONS.map(s => `${s.prefix}-enabled`)];
         for (const key of rebuildKeys)
             this._settings.connectObject(`changed::${key}`, () => this._scheduleRebuild(), this);
+        // The player bar is built fresh into whichever LibraryView is footer
+        // shows; toggling it rebuilds so every place picks it up or drops it.
+        this._settings.connectObject('changed::player-bar', () => {
+            this._syncPlayerBar();
+            this._scheduleRebuild();
+        }, this);
+        this._settings.connectObject('changed::sync-interval', () => this._scheduleSync(), this);
         // What a claimed workspace means differs between the places, so none
         // is carried from one to the other; nor is a pick, which may have
         // been opened somewhere the new setting has no room for.
@@ -288,9 +299,6 @@ export class MusicMenuApp {
                     event === Gio.FileMonitorEvent.RENAMED ||
                     event === Gio.FileMonitorEvent.MOVED_IN) {
                     this._scheduleRebuild({reload: true, delay: 400});
-                    // A rescan is a good moment to look for another
-                    // machine's marks in the folders.
-                    this._tracker.sync();
                 }
             });
         } catch (e) {
@@ -313,11 +321,11 @@ export class MusicMenuApp {
             this._monitor.cancel();
             this._monitor = null;
         }
-        for (const id of [this._rebuildTimer, this._closeTimer]) {
+        for (const id of [this._rebuildTimer, this._closeTimer, this._syncTimer]) {
             if (id)
                 GLib.source_remove(id);
         }
-        this._rebuildTimer = this._closeTimer = 0;
+        this._rebuildTimer = this._closeTimer = this._syncTimer = 0;
         this._leaving.clear();
         this._teardown();
         this._button.detach();
@@ -325,9 +333,17 @@ export class MusicMenuApp {
         this._picked = this._origin = null;
         this._keepOnly(new Set());
         this._sections = {};
-        // Where a file playing now got to goes down before the tracker stops.
-        this._playback.disable();
-        this._tracker.disable();
+        this._searchProvider?.unregister();
+        this._searchProvider = null;
+        this._nowPlayingPanel?.destroy();
+        this._nowPlayingPanel = null;
+        this._nowPlayingView?.destroy();
+        this._nowPlayingView = null;
+        this._playerBar?.destroy();
+        this._playerBar = null;
+        this._player?.disconnectObject(this);
+        this._player?.destroy();
+        this._player = null;
         this._controls.disable();
     }
 
@@ -338,7 +354,12 @@ export class MusicMenuApp {
         this._browser?.disable();
         this._browser = null;
         // The pages are the container's children, and go with it; the pane
-        // and the popup host themselves.
+        // and the popup host themselves. The now-playing view is shared with
+        // the pop-up panel, though, and outlives a rebuild — detached rather
+        // than destroyed along with the page that was hosting it.
+        if (this._nowPlayingView && this._detailPage?.stack.contains(this._nowPlayingView.actor))
+            this._detailPage.stack.remove_child(this._nowPlayingView.actor);
+        this._nowPlayingPanel?.popdown();
         this._library = null;
         this._detailPage = null;
         this._detail?.destroy();
@@ -402,7 +423,14 @@ export class MusicMenuApp {
     // Settings helpers
     // ------------------------------------------------------------------
     _enabledSections() {
-        return SECTIONS.filter(s => this._settings.get_boolean(`${s.prefix}-enabled`));
+        return enabledSections(this._settings);
+    }
+
+    // The items behind a tab. Listen Now has no items of its own — library.js
+    // always answers it with an empty array — its content is the shelves,
+    // kept alongside the sections rather than as one of them.
+    _itemsFor(key) {
+        return key === 'listen-now' ? this._sections.shelves ?? [] : this._sections[key] ?? [];
     }
 
     // The two independent choices. Both are one of 'desktop', 'workspaces',
@@ -639,6 +667,8 @@ export class MusicMenuApp {
     // already up, it is put away again.
     _toggleLibrary() {
         if (this._browser) {
+            if (!this._browser.isShowing)
+                this._maybeAutostartEngine();
             this._browser.toggle(this._sectionKey);
             return;
         }
@@ -650,6 +680,7 @@ export class MusicMenuApp {
             this._closeLibrary();
             return;
         }
+        this._maybeAutostartEngine();
         Main.overview.hide();
         this._openLibrary({reveal: !overview});
     }
@@ -698,6 +729,7 @@ export class MusicMenuApp {
         if (this._busy)
             return;
         this._dialog?.popdown();
+        this._nowPlayingPanel?.popdown();
         this._browser?.close();
         const wm = global.workspace_manager;
         const active = wm.get_active_workspace();
@@ -753,6 +785,7 @@ export class MusicMenuApp {
     _controlsOpen() {
         if (global.display.focus_window || Main.modalCount > 0)
             return;
+        this._maybeAutostartEngine();
         if (this._browser) {
             this._browser.open(this._sectionKey);
             return;
@@ -765,6 +798,7 @@ export class MusicMenuApp {
     // or the overview or a panel of ours would be over the window.
     _openSettings() {
         this._dialog?.popdown();
+        this._nowPlayingPanel?.popdown();
         this._browser?.close();
         this._extension.openPreferences();
     }
@@ -853,6 +887,7 @@ export class MusicMenuApp {
         this._overlay.destroy_all_children();
         this._detail?.actor.remove_all_transitions();
         this._detail?.actor.hide();
+        this._nowPlayingView?.actor.hide();
         const grid = this._library?.currentView;
         if (grid) {
             grid.remove_all_transitions();
@@ -924,38 +959,136 @@ export class MusicMenuApp {
         stack.add_child(actor);
     }
 
-    // What a section's files open with is that section's own setting; a
-    // folder goes to the system default.
-    //
-    // An episode or a film picks up where it was left, once the player has
-    // it; the watcher marks it watched when playback gets far enough.
-    _open(path, section) {
-        const key = section ? openCommandKey(section) : null;
-        openPath(path, key ? this._settings.get_string(key) : '', () => {
-            if (Tracker.tracks(section))
-                this._playback.resumeNext(path);
-            this._toPlayingWorkspace();
+    // ------------------------------------------------------------------
+    // Player, sync and search
+    // ------------------------------------------------------------------
+
+    // Built (or torn down) to match the 'player-bar' setting. Persists across
+    // a rebuild — a new LibraryView's footer just gets it reattached
+    // (libraryView.js `setFooter` detaches rather than destroying it) — so
+    // there is one bar and one Player for the whole session.
+    _syncPlayerBar() {
+        const wanted = this._settings.get_boolean('player-bar');
+        if (wanted && !this._playerBar && this._player) {
+            this._playerBar = new PlayerBar({
+                player: this._player,
+                onOpenNowPlaying: () => this._openNowPlaying(),
+            });
+        } else if (!wanted && this._playerBar) {
+            this._playerBar.destroy();
+            this._playerBar = null;
+        }
+    }
+
+    // The now-playing view, opened in whichever detail place is in use: the
+    // shared pop-up host (panel.js) in "menu"/"modal", or the pane's own page
+    // on the surface. There is one of each, built the first time it is wanted.
+    _openNowPlaying() {
+        if (!this._player)
+            return;
+        if (!this._nowPlayingView) {
+            this._nowPlayingView = new NowPlayingView({player: this._player});
+            this._syncNowPlayingTrack();
+        }
+        // A workspace of its own for the pane (`detail-opens-in: workspaces`)
+        // is not worth tracking for now-playing too — a pane that is not a
+        // library pick has no `_placeForWorkspace` place of its own — so that
+        // case, like the pop-up ones, uses the shared popup host instead.
+        if (this._detailPopsUp() || this._detailClaimsWorkspace()) {
+            if (!this._nowPlayingPanel) {
+                this._nowPlayingPanel = new NowPlayingPanel({
+                    view: this._nowPlayingView,
+                    size: this._settings.get_int('detail-size') / 100,
+                });
+            }
+            this._nowPlayingPanel.popup();
+            return;
+        }
+        if (!this._surfaceWanted())
+            return;
+        this._resetViews();
+        this._mode = 'now-playing';
+        this._library?.actor.hide();
+        const page = this._detailPageFor({title: 'Now Playing'});
+        const actor = this._nowPlayingView.actor;
+        if (actor.get_parent() !== page.stack) {
+            actor.get_parent()?.remove_child(actor);
+            page.stack.add_child(actor);
+        }
+        this._detail?.actor.hide();
+        page.actor.show();
+        actor.show();
+        this._shown = DETAIL;
+    }
+
+    // The currently-playing track, for the pane's rows to highlight — read off
+    // the Player's own state rather than tracked here, so it is right however
+    // playback started (the library, MPRIS from elsewhere, another machine).
+    _syncNowPlayingTrack() {
+        const track = this._player?.state?.track ?? null;
+        const id = track?.catalogId ?? track?.id ?? null;
+        this._detail?.setNowPlayingTrack(id);
+        this._dialog?.setNowPlayingTrack(id);
+    }
+
+    // Automatic sync: every 'sync-interval' minutes (0 = off), and once on
+    // enable if 'last-sync' is already older than that.
+    _scheduleSync() {
+        if (this._syncTimer) {
+            GLib.source_remove(this._syncTimer);
+            this._syncTimer = 0;
+        }
+        const minutes = this._settings.get_int('sync-interval');
+        if (!minutes)
+            return;
+        const intervalMs = minutes * 60 * 1000;
+        const last = Date.parse(this._settings.get_string('last-sync') || '');
+        const overdue = !last || Date.now() - last >= intervalMs;
+        if (overdue)
+            this._runSync();
+        this._syncTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, minutes * 60, () => {
+            this._runSync();
+            return GLib.SOURCE_CONTINUE;
         });
     }
 
-    // Something is being played: with `play-on-new-workspace`, onto an empty
-    // workspace first, so the player's window maps there — a new window
-    // opens on the active workspace — and what it was picked from stays as
-    // it was. What was up to pick it goes, or it would be over the player.
-    // The workspace is not held: the player's window is what keeps it, and
-    // when that closes the shell folds it away as it would any other.
-    _toPlayingWorkspace() {
-        if (!this._settings.get_boolean('play-on-new-workspace'))
-            return;
-        const workspace = this._claimWorkspace();
-        if (!workspace) {
-            console.warn('[Music Menu] No empty workspace to play on (Settings → Multitasking).');
+    async _runSync() {
+        try {
+            await amctl.run(['sync']);
+            this._settings.set_string('last-sync', new Date().toISOString());
+        } catch (e) {
+            console.warn(`[Music Menu] Automatic sync failed: ${e.message}`);
+        }
+    }
+
+    // Started headlessly the moment the library is opened, so it is ready by
+    // the time anything on screen wants to play or search.
+    _maybeAutostartEngine() {
+        if (this._settings.get_boolean('engine-autostart'))
+            amctl.fire(['engine', 'start']);
+    }
+
+    // A result picked in the overview's search: a groupless item (no track
+    // list yet) is filled in first, then shown as any other pick — popped up,
+    // or on the surface's pane, whichever `detail-opens-in` says.
+    async _activateSearchResult(item) {
+        let full = item;
+        if (!item.groups) {
+            try {
+                full = await amctl.run(['item', item.kind, item.id]);
+            } catch (e) {
+                console.warn(`[Music Menu] Could not load ${item.kind} ${item.id}: ${e.message}`);
+            }
+        }
+        const key = KIND_TO_SECTION[full.kind] ?? 'albums';
+        const section = sectionByKey(key);
+        Main.overview.hide();
+        if (this._dialog) {
+            this._dialog.popup(null, full, section);
             return;
         }
-        this._dialog?.popdown();
-        this._browser?.close();
-        Main.overview.hide();
-        workspace.activate(global.get_current_time());
+        if (this._detailOnSurface())
+            this._showDetail(key, full);
     }
 
     // ------------------------------------------------------------------
@@ -984,18 +1117,18 @@ export class MusicMenuApp {
         }
         // The tab it was left on, or the first with anything in it.
         if (!sections.some(s => s.key === this._sectionKey))
-            this._sectionKey = (sections.find(s => this._sections[s.key]?.length) ?? sections[0]).key;
+            this._sectionKey = (sections.find(s => this._itemsFor(s.key)?.length) ?? sections[0]).key;
         this._button.attach();
 
         // A pick that pops up has a pane of its own, in the folder's panel;
         // it hosts itself over whatever it is opened from.
         if (this._detailPopsUp()) {
             this._dialog = new DetailDialog({
-                onOpen: (path, section) => this._open(path, section),
-                tracker: this._tracker,
+                onMenu: ({item, track, sourceActor}) => openItemMenu({item, track, sourceActor}),
                 size: this._settings.get_int('detail-size') / 100,
                 mode: this._detailMode(),
             });
+            this._syncNowPlayingTrack();
         }
 
         // One way of browsing at a time: a browser of its own — the library
@@ -1005,13 +1138,15 @@ export class MusicMenuApp {
             const Browser = this._libraryMode() === 'modal' ? LibraryWindow : MediaMenu;
             this._browser = new Browser({
                 sections,
-                itemsFor: key => this._sections[key] ?? [],
+                itemsFor: key => this._itemsFor(key),
                 onActivate: (key, item, tile) => this._openPicked(key, item, tile),
+                onContextMenu: (item, tile) => openItemMenu({item, sourceActor: tile}),
                 columns: this._columns(),
                 rows: this._rows(),
                 button: this._button,
                 onSwitch: key => (this._sectionKey = key),
                 onOpenSettings: () => this._openSettings(),
+                footer: this._playerBar?.actor ?? null,
             });
             this._browser.enable();
         }
@@ -1058,11 +1193,11 @@ export class MusicMenuApp {
         const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
         if (this._detailOnSurface()) {
             this._detail = new DetailView({
-                onOpen: (path, section) => this._open(path, section),
-                tracker: this._tracker,
+                onMenu: ({item, track, sourceActor}) => openItemMenu({item, track, sourceActor}),
             });
             this._detail.setSize(bounds.width, bounds.height - HEADER_ALLOWANCE * scale);
             this._detail.actor.hide();
+            this._syncNowPlayingTrack();
         }
 
         const onSurface = this._libraryOnSurface();
@@ -1113,18 +1248,20 @@ export class MusicMenuApp {
         close.connect('clicked', () => this._closeLibrary());
         this._library = new LibraryView({
             sections,
-            itemsFor: key => this._sections[key] ?? [],
+            itemsFor: key => this._itemsFor(key),
             active: this._sectionKey,
             width,
             height,
             columns: this._columns(),
             rows: this._rows(),
             onActivate: (key, item, tile) => this._openItem(key, item, tile),
+            onContextMenu: (item, tile) => openItemMenu({item, sourceActor: tile}),
             onSwitch: key => (this._sectionKey = key),
             onBack: () => this._goBack(),
             end: [settings, close],
             onOpenSettings: () => this._openSettings(),
         });
+        this._library.setFooter(this._playerBar?.actor ?? null);
         // Sized outright: a clone lays a hidden source out at the size it asks
         // for, and the overview's pictures of the workspace are clones of it.
         this._library.actor.set_size(width, height);
@@ -1143,7 +1280,12 @@ export class MusicMenuApp {
                 orientation: Clutter.Orientation.VERTICAL,
                 width, height, visible: false,
             });
-            const header = createHeader({sections: [], onBack: () => this._goBack()});
+            // Shared between a picked item's pane and the now-playing page;
+            // which one Back leads out of follows the mode on show.
+            const header = createHeader({
+                sections: [],
+                onBack: () => (this._mode === 'now-playing' ? this._closeNowPlaying() : this._goBack()),
+            });
             actor.add_child(header.actor);
             const stack = new St.Widget({
                 layout_manager: new Clutter.BinLayout(),
@@ -1212,7 +1354,9 @@ export class MusicMenuApp {
 
         const library = this._library;
         this._attachDetail(library.stack);
-        const art = tile.artwork;
+        // A grid tile's artwork is a child actor the hero flies from; a
+        // shelf's tile (listen-now) may simply be its own artwork.
+        const art = tile.artwork ?? tile;
         const from = rectIn(art, this._container);
         this._heroFrom = {item, from};
 
@@ -1315,7 +1459,9 @@ export class MusicMenuApp {
         const library = this._library;
         const grid = library.currentView;
         const remembered = this._heroFrom;
-        const tile = remembered ? grid.tileFor(remembered.item.id) : null;
+        // A shelf (listen-now) has no `tileFor`: nothing to fly the hero back
+        // onto, so it simply fades away with the pane.
+        const tile = remembered ? grid?.tileFor?.(remembered.item.id) ?? null : null;
 
         library.header.setLibraryMode(true);
 
@@ -1365,7 +1511,9 @@ export class MusicMenuApp {
             return Clutter.EVENT_STOP;
         const symbol = event.get_key_symbol();
         if (symbol === Clutter.KEY_Escape) {
-            if (this._mode === 'detail')
+            if (this._mode === 'now-playing')
+                this._closeNowPlaying();
+            else if (this._mode === 'detail')
                 this._goBack();
             else
                 this._closeLibrary();
@@ -1378,12 +1526,24 @@ export class MusicMenuApp {
             global.stage.get_key_focus() === this._container) {
             // The library says where its keyboard starts; the pane hands the
             // first key to St, which finds the first thing that can take it.
-            if (this._mode === 'detail'
-                ? this._detail?.actor.navigate_focus(null, St.DirectionType.TAB_FORWARD, false)
-                : this._library?.focusFirst())
+            if (this._mode === 'now-playing'
+                ? this._nowPlayingView?.actor.navigate_focus(null, St.DirectionType.TAB_FORWARD, false)
+                : this._mode === 'detail'
+                    ? this._detail?.actor.navigate_focus(null, St.DirectionType.TAB_FORWARD, false)
+                    : this._library?.focusFirst())
                 return Clutter.EVENT_STOP;
         }
         return Clutter.EVENT_PROPAGATE;
+    }
+
+    // Back out of the now-playing page, to the library — a plain switch
+    // rather than `_goBack`'s hero-flight bookkeeping, which is for a picked
+    // item and not for this.
+    _closeNowPlaying() {
+        if (this._mode !== 'now-playing')
+            return;
+        this._nowPlayingView?.actor.hide();
+        this._showLibraryNow({reveal: true});
     }
 
     // Is the active workspace one of ours?

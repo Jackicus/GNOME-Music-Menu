@@ -250,7 +250,7 @@ class MusicMenuPosterIcon extends IconGrid.BaseIcon {
 
 const MediaItem = GObject.registerClass(
 class MusicMenuMediaItem extends AppDisplay.AppViewItem {
-    _init({item, section, order, onActivate}) {
+    _init({item, section, order, onActivate, onContextMenu}) {
         super._init({style_class: 'overview-tile'}, false, true);
         this._id = `${section.key}/${item.id}`;
         this._name = item.title;
@@ -274,6 +274,21 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
         this.set_child(this.icon);
         // The tile goes along, for whatever the pick zooms or flies out of.
         this.connect('clicked', () => onActivate(section.key, item, this));
+        // A secondary click or the Menu key opens the item's own menu
+        // (itemMenu.js) instead of its detail — play next/later, love, add to
+        // a playlist, copy link.
+        this.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() !== Clutter.BUTTON_SECONDARY)
+                return Clutter.EVENT_PROPAGATE;
+            onContextMenu?.(item, this);
+            return Clutter.EVENT_STOP;
+        });
+        this.connect('key-press-event', (_actor, event) => {
+            if (event.get_key_symbol() !== Clutter.KEY_Menu)
+                return Clutter.EVENT_PROPAGATE;
+            onContextMenu?.(item, this);
+            return Clutter.EVENT_STOP;
+        });
     }
 
     // The artwork itself, which the hero flight takes off from. A BaseIcon
@@ -289,7 +304,7 @@ let pendingGrid = null;
 
 const MediaView = GObject.registerClass(
 class MusicMenuMediaView extends BaseAppView {
-    _init({section, items, onActivate}) {
+    _init({section, items, onActivate, onContextMenu}) {
         super._init({
             layout_manager: new Clutter.BinLayout(),
             x_expand: true,
@@ -340,6 +355,7 @@ class MusicMenuMediaView extends BaseAppView {
         this._section = section;
         this._data = items;
         this._onActivate = onActivate;
+        this._onContextMenu = onContextMenu;
         this._columns = pendingGrid.columns;
         this._perPage = pendingGrid.rows * this._columns;
         this._media = [];
@@ -359,6 +375,7 @@ class MusicMenuMediaView extends BaseAppView {
                 section: this._section,
                 order,
                 onActivate: this._onActivate,
+                onContextMenu: this._onContextMenu,
             });
             this._media.push(item);
             this._byId.set(this._data[order].id, item);
@@ -442,9 +459,9 @@ class MusicMenuMediaView extends BaseAppView {
 
 // A view of `items` for the box it is given. `columns` and `rows` are the
 // grid-shape settings, which every caller passes.
-export function createMediaView({section, items, width, height, columns, rows, onActivate}) {
+export function createMediaView({section, items, width, height, columns, rows, onActivate, onContextMenu}) {
     pendingGrid = gridFor(width, height, section.aspect, columns, rows);
-    const view = new MediaView({section, items, onActivate});
+    const view = new MediaView({section, items, onActivate, onContextMenu});
     // Filling the grid moves it: each batch of tiles makes another page, and
     // the grid follows the one it has just made. Start at the first.
     view.goToPage(0, false);
