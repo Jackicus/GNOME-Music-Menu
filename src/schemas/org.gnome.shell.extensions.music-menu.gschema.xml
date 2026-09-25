@@ -210,13 +210,13 @@
         <!-- Appearance: one set of style settings, shared by all views -->
         <key name="columns" type="i">
             <range min="4" max="10"/>
-            <default>6</default>
+            <default>8</default>
             <summary>Columns</summary>
             <description>Covers per row. Fewer means larger covers. The count is capped by what fits the space the grid is drawn in — the overview's grid slot is the smallest — so a narrow space shows fewer.</description>
         </key>
         <key name="rows" type="i">
             <range min="1" max="3"/>
-            <default>2</default>
+            <default>3</default>
             <summary>Rows</summary>
             <description>Rows per page. Fewer means larger covers. The count is capped by what fits the space the grid is drawn in — the overview's grid slot is the smallest — so a narrow space shows fewer.</description>
         </key>

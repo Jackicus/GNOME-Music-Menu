@@ -95,6 +95,22 @@ Schema `org.gnome.shell.extensions.music-menu`. Kept from Video Menu:
 — none of that applies here, there's no folder scanner and no "watched"
 concept.
 
+## Listen Now is rows of the app grid
+
+`shelfView.js` builds each shelf as a one-row `createMediaView` (the same
+`BaseAppView` subclass the tabs use, given a `shape` of one row at the
+tabs' tile size), so a shelf pages exactly as the app grid does and "See
+All" is the same view `rows` deep. There is no shelf-specific tile.
+
+**Gotcha, GNOME 50:** `St.FocusManager` now gives every focus group a
+`ClutterKeyController`, which handles the arrows in the *capture* phase.
+The outermost group around the focused actor (the overview's, or the
+surface's stack) therefore navigates first and swallows the key; no
+`key-press-event` or `captured-event` on anything of ours below it ever
+sees an arrow while a tile is focused. Don't add arrow handling inside a
+view expecting it to run — it won't. Moving the keyboard between rows and
+shelves is St's own spatial search.
+
 ## Tests and the check gate
 
 ```bash

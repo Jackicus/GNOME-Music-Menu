@@ -32,15 +32,18 @@ const BaseAppView = Object.getPrototypeOf(AppDisplay.AppDisplay);
 // multiplied by the scale factor where it meets an allocation.
 //
 // The smallest a cover is allowed to get; it is what caps "columns" and "rows".
-const MIN_ART = 96;
+// The app grid's own icons come down to this on a small page, and a cover
+// beside them at the same size reads as one of them.
+const MIN_ART = 64;
 // .icon-grid column-spacing/row-spacing (data/theme/…/_app-grid.scss:8-9), the
 // value the theme hands the layout; only gridFor, which runs before the grid
 // exists, needs it here.
 const GAP = 12;
 // What an `overview-tile` adds around its artwork: 12px of padding on each
-// side, and beneath it a 6px gap and one line of label.
+// side, and beneath it a 6px gap and a line of title, then another gap and
+// the line of artist under it (PosterIcon) — 24 + 20 + 6 + 17 + 6.
 const TILE_PADDING = 24;
-const TILE_CHROME = 56;
+const TILE_CHROME = 74;
 // A second line of that label, left free under the bottom row: a hovered tile
 // there wraps its title downwards like any other, and the page edge would
 // otherwise cut the line off.
@@ -50,8 +53,17 @@ const PAGE_PADDING_V = 48;
 const PAGE_PADDING_H = 36;
 // Beside the grid: a tenth of the width each side, where the page arrows
 // stand (the shell's PAGE_PREVIEW_RATIO). Beneath it: the page dots.
-const ARROWS_SHARE = 0.2;
+export const ARROWS_SHARE = 0.2;
 const DOTS_HEIGHT = 36;
+// The icon a placeholder tile falls back to when an item has no artwork, by
+// what the item is — a shelf mixes albums, playlists and stations, where a
+// tab's items are all of its own kind and take the section's icon.
+const KIND_ICON = {
+    album: 'media-optical-cd-audio-symbolic',
+    playlist: 'view-list-symbolic',
+    artist: 'avatar-default-symbolic',
+    station: 'radio-symbolic',
+};
 // Pages built beyond the one showing, so the next is there to swipe to.
 const PAGES_AHEAD = 2;
 
@@ -102,6 +114,22 @@ function gridFor(width, height, aspect, wantColumns, wantRows) {
     const iconSize = Math.max(minArt, Math.min(byWidth, forRows(rows)));
 
     return {rows, columns, iconSize};
+}
+
+// The shape a view of `columns` by `rows` takes in a box, for whoever builds
+// a grid of another shape to the same tile — a shelf (shelfView.js) is one
+// row of the tiles the tabs show, not a row of tiles sized on its own.
+export function gridShapeFor({width, height, columns, rows, aspect = 1.0}) {
+    return gridFor(width, height, aspect, columns, rows);
+}
+
+// How tall a view of that shape is, in physical px: its rows of tiles, the
+// page padding around them, the spare title line and the dots beneath —
+// the same budget gridFor takes out of a box, put back.
+export function pageHeightFor({rows, iconSize}) {
+    const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+    return Math.ceil(rows * (iconSize + TILE_CHROME * scale) + (rows - 1) * GAP * scale +
+        (PAGE_PADDING_V + TITLE_LINE + DOTS_HEIGHT) * scale);
 }
 
 // The shell's layout takes the larger of an item's width and height as the
@@ -259,16 +287,19 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
 
         // The icon's size is the height of its artwork. Every section is
         // square (aspect 1.0); `round` swaps the corner radius for a full
-        // circle, Apple Music's own artist lockup.
+        // circle, Apple Music's own artist lockup. A shelf's tiles are of
+        // mixed kinds, so there the item says which it is.
+        const round = section.round || (section.shelves && item.kind === 'artist');
+        const icon = (section.shelves && KIND_ICON[item.kind]) || section.icon;
         this.icon = new PosterIcon(item.title, item.subtitle, {
             setSizeManually: true,
             createIcon: size => createArtwork({
                 path: item.art,
                 title: item.title,
-                icon: section.icon,
+                icon,
                 width: Math.round(size / section.aspect),
                 height: size,
-                radius: section.round ? 'round' : 'art',
+                radius: round ? 'round' : 'art',
             }),
         });
         this.set_child(this.icon);
@@ -421,6 +452,18 @@ class MusicMenuMediaView extends BaseAppView {
         return order >= 0 && order % this._perPage < this._columns;
     }
 
+    // And on the last row of its page, for an arrow down that a shelf turns
+    // into a step onto the shelf beneath.
+    atBottomRow(actor) {
+        const order = this._media.indexOf(actor);
+        if (order < 0)
+            return false;
+        const page = Math.floor(order / this._perPage);
+        const onPage = Math.min(this._perPage, this._data.length - page * this._perPage);
+        const lastRow = (Math.ceil(onPage / this._columns) - 1) * this._columns;
+        return order % this._perPage >= lastRow;
+    }
+
     // Which page is showing is the scroll adjustment's answer, not the
     // grid's: the grid's own idea of it is whatever the last batch of tiles
     // left behind.
@@ -458,9 +501,10 @@ class MusicMenuMediaView extends BaseAppView {
 });
 
 // A view of `items` for the box it is given. `columns` and `rows` are the
-// grid-shape settings, which every caller passes.
-export function createMediaView({section, items, width, height, columns, rows, onActivate, onContextMenu}) {
-    pendingGrid = gridFor(width, height, section.aspect, columns, rows);
+// grid-shape settings, which every caller passes; a `shape` (gridShapeFor's
+// answer, or one row of it) is taken as it is instead.
+export function createMediaView({section, items, width, height, columns, rows, shape = null, onActivate, onContextMenu}) {
+    pendingGrid = shape ?? gridFor(width, height, section.aspect, columns, rows);
     const view = new MediaView({section, items, onActivate, onContextMenu});
     // Filling the grid moves it: each batch of tiles makes another page, and
     // the grid follows the one it has just made. Start at the first.

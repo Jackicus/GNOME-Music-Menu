@@ -59,6 +59,11 @@ def get_profile_dir():
 
 
 def get_state_file():
+    # A run on a profile of its own (MUSIC_MENU_PROFILE: a test, a demo)
+    # keeps its engine state there too, so it never finds — and drives —
+    # the real session's engine through the shared runtime directory.
+    if os.environ.get("MUSIC_MENU_PROFILE"):
+        return os.path.join(get_profile_dir(), "engine.json")
     xdg = os.environ.get("XDG_RUNTIME_DIR")
     if xdg:
         d = os.path.join(xdg, "music-menu")

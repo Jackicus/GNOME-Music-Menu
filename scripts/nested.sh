@@ -131,6 +131,7 @@ nested_env() {
 # writing -- which also keeps it out of the way of any other project's nested
 # shell, whose dconf-service rewrites that file from a stale cache.
 setup_clean_profile() {
+    local demo="${1:-0}"
     command -v dconf >/dev/null || die "'dconf' not found; --clean needs 'dconf compile'."
     local seed="$RUN_DIR/dconf-seed" key value
     mkdir -p "$seed"
@@ -139,6 +140,15 @@ setup_clean_profile() {
         echo "enabled-extensions=['$UUID']"
         echo "welcome-dialog-last-shown-version='999'"
         echo
+        if (( demo )); then
+            # The demo library is what shows, and nothing may replace it: no
+            # automatic sync (it would fetch the real library into the demo
+            # cache) and no engine started on the extension's behalf.
+            echo "[org/gnome/shell/extensions/music-menu]"
+            echo "sync-interval=0"
+            echo "engine-autostart=false"
+            echo
+        fi
         echo "[org/gnome/desktop/interface]"
         for key in color-scheme accent-color gtk-theme icon-theme cursor-theme font-name \
                    document-font-name monospace-font-name text-scaling-factor; do
@@ -235,7 +245,7 @@ cmd_start() {
     local mode_args=(--wayland --wayland-display "$WL_DISPLAY" --headless --virtual-monitor "$geometry")
     local extra_env=()
     if (( clean )); then
-        setup_clean_profile
+        setup_clean_profile "$demo"
         extra_env+=(DCONF_PROFILE="$PROFILE_FILE")
     fi
     if (( demo )); then
@@ -243,7 +253,11 @@ cmd_start() {
         XDG_CACHE_HOME="$DEMO_CACHE" MUSIC_MENU_CACHE="$DEMO_CACHE/music-menu" \
             python3 "$REPO_DIR/scripts/demo_library.py" --out-dir "$DEMO_CACHE/music-menu" >/dev/null \
             || die "Could not make the demo library (scripts/demo_library.py)."
-        extra_env+=(XDG_CACHE_HOME="$DEMO_CACHE" MUSIC_MENU_CACHE="$DEMO_CACHE/music-menu")
+        # Its own cache, and its own (never started) engine profile and port,
+        # so am.py run from inside it cannot find the real session's engine
+        # and pull the real library in over the demo one.
+        extra_env+=(XDG_CACHE_HOME="$DEMO_CACHE" MUSIC_MENU_CACHE="$DEMO_CACHE/music-menu"
+                    MUSIC_MENU_PROFILE="$DEMO_CACHE/chrome" MUSIC_MENU_PORT=9229)
     fi
 
     info "Starting nested GNOME Shell (headless, $geometry$( (( clean )) && echo ', own settings, no other extensions')$( (( demo )) && echo ', demo library'))..."

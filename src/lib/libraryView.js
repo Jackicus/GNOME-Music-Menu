@@ -10,11 +10,10 @@
 // takes that one step itself, up onto the tabs, and the step back down into
 // the grid — which lets a remote with nothing but arrows switch libraries.
 //
-// Listen Now is not a grid: its tab hosts a ShelfView, a vertical scroll of
-// horizontal shelves, over the same items every other tab would show as tiles.
-// It has no page-based keyboard shape of its own (no `atTopRow`, no paging),
-// so the few places that lean on a grid's extra methods ask for them with `?.`
-// rather than assuming every tab's view is one.
+// Listen Now is not one grid: its tab hosts a ShelfView, a vertical scroll of
+// shelves that are each a one-row grid of the same tiles, and it answers the
+// same few methods a grid does (`focusFirst`, `atTopRow`, `pageBy`, `tileFor`)
+// on their behalf. The empty state answers none, so they are asked with `?.`.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -30,11 +29,6 @@ import * as amctl from './amctl.js';
 // — keep in step — taken off the top before anything under it is sized.
 // Logical px.
 export const HEADER_ALLOWANCE = 76;
-
-// The physical size of a shelf's tiles (ShelfView's `tileSize`) — a square
-// somewhere between a grid's smallest and largest cover, since a shelf has no
-// `columns`/`rows` setting of its own to size against.
-const SHELF_TILE = 168;
 
 export class LibraryView {
     // `sections` are the tabs, in order, and `active` the one to show first.
@@ -259,16 +253,20 @@ export class LibraryView {
                 onAction: this._onOpenSettings,
             });
         } else if (section.shelves) {
-            // Listen Now: a vertical scroll of horizontal shelves, not a
-            // grid. Given the same page budget a grid gets (short of the
-            // footer already) so its ScrollView ends above the bar instead
-            // of filling the whole (unclipped) stack and running behind it.
+            // Listen Now: a vertical scroll of one-row grids. Given the same
+            // box a grid gets (short of the footer already), so its tiles come
+            // out the size a tab's do and its ScrollView ends above the bar
+            // instead of filling the whole (unclipped) stack and running
+            // behind it.
             const shelf = new ShelfView({
+                section,
                 shelves: items,
-                tileSize: Math.round(SHELF_TILE * scale),
+                width: this._width,
                 height,
-                onActivate: (item, sourceActor) => this._onActivate?.(key, item, sourceActor),
-                onContextMenu: (item, sourceActor) => this._onContextMenu?.(item, sourceActor),
+                columns: this._columns,
+                rows: this._rows,
+                onActivate: this._onActivate,
+                onContextMenu: this._onContextMenu,
             });
             view = shelf;
             actor = shelf.actor;

@@ -799,16 +799,17 @@
     -st-vfade-offset: 24px;
 }
 
-/* Horizontal inset matching the grid's own side margins (mediaGrid.js's
- * ARROWS_SHARE/PAGE_PADDING_H), so a shelf's title, tiles and "See All"
- * don't run to the screen edge the way the grid's own block never does. */
+/* The list has no inset of its own: each shelf is a page of the grid, which
+ * keeps its own margins (mediaGrid.js's ARROWS_SHARE), and its header is
+ * given the same margin in shelfView.js so the title lines up with the first
+ * tile. */
 .mm-shelf-list {
-    spacing: 32px;
-    padding: 4px 3em 24px 3em;
+    spacing: 0;
+    padding: 4px 0 24px 0;
 }
 
 .mm-shelf {
-    spacing: 12px;
+    spacing: 0;
 }
 
 .mm-shelf-header {
@@ -836,49 +837,6 @@
 
 .mm-shelf-see-all:focus {
     box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
-}
-
-/* The row scrolls sideways with no visible bar of its own — .hfade is the
- * shell's own edge-fade class (switcherPopup.js), so the row reads as
- * continuing off both sides rather than stopping dead against the surface. */
-.mm-shelf-row {
-    -st-hfade-offset: 24px;
-}
-
-.mm-shelf-row-box {
-    spacing: 16px;
-    padding: 4px 4px 12px 4px;
-}
-
-.mm-shelf-grid {
-    padding: 4px 4px 12px 4px;
-}
-
-/* A tile's own focus ring: it is a plain button, not `.button`, so nothing
- * paints one unless this does. Never a box-shadow on the artwork itself
- * (Gotchas) — this sits on the tile, one level up, around the whole stack. */
-.mm-shelf-tile {
-    border-radius: 12px;
-    padding: 6px;
-}
-
-.mm-shelf-tile:focus {
-    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
-}
-
-.mm-shelf-tile-content {
-    spacing: 8px;
-}
-
-.mm-shelf-tile-title {
-    font-size: 0.95em;
-    font-weight: bold;
-    color: #fafafb;
-}
-
-.mm-shelf-tile-subtitle {
-    font-size: 0.82em;
-    color: rgba(250, 250, 251, 0.6);
 }
 
 /* === Item menu (itemMenu.js) === */

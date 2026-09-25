@@ -1497,7 +1497,7 @@ export class MusicMenuApp {
         const library = this._library;
         const grid = library.currentView;
         const remembered = this._heroFrom;
-        // A shelf (listen-now) has no `tileFor`: nothing to fly the hero back
+        // The empty state has no `tileFor`: nothing to fly the hero back
         // onto, so it simply fades away with the pane.
         const tile = remembered ? grid?.tileFor?.(remembered.item.id) ?? null : null;
 
