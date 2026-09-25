@@ -37,9 +37,12 @@ const HERO_RESERVED = 52 + 16;             // one row of action buttons and the 
 const HERO_MAX_WIDTH_FRACTION = 0.34;      // of the pane width
 // The hero's floor on a small work area — see `_heroSize`.
 const HERO_MIN = 132;
-// 14px type at the stylesheet's line-height: 1.5.
+// 14px type at the stylesheet's line-height: 1.5. Clamped to three lines so
+// a long editorial blurb never reserves more height than a short one shows,
+// which otherwise leaves a fixed-size gap above the track list regardless
+// of how much text there actually is.
 const SUMMARY_LINE = 21;
-const SUMMARY_LINES = 5;
+const SUMMARY_LINES = 3;
 // A disc runs to a couple of dozen tracks, an artist's album list to a
 // handful of groups. The first batch is a screenful — and the one that is
 // staggered in — and the rest follow as the list scrolls.

@@ -309,11 +309,11 @@ export function createPill(text, styleClass, style = null) {
 // colour), the title with an "E" pill when explicit, the artist dimmed
 // underneath, a right-aligned duration and a `...` button that opens the
 // track's menu. Hover is a single background change on the row itself —
-// nothing inside it restyles on its own account, except the index glyph and
-// the playing state, which key off the row's own `:hover`, `:focus` and
-// `.mm-row-playing` entirely in the stylesheet, so nothing here polls either
-// by hand. Returns the row with `setNowPlaying(bool)` attached, for the
-// player to mark whichever row is currently playing.
+// nothing inside it restyles on its own account, except the index glyph,
+// which this function toggles directly off crossing events and key focus
+// (not `track_hover`, and no rule keys a descendant off the row's own
+// `:hover` — see the Gotchas). Returns the row with `setNowPlaying(bool)`
+// attached, for the player to mark whichever row is currently playing.
 export function createRow({index, title, subtitle, explicit = false, duration, size, nowPlaying = false, onActivate, onMenu}) {
     const row = new St.Button({
         // The theme's flat button: hover, focus and pressed come with it, and
@@ -328,7 +328,7 @@ export function createRow({index, title, subtitle, explicit = false, duration, s
     const content = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
 
     // The number and the play glyph sit on top of each other in the same
-    // bin; which one shows is the stylesheet's doing, not this function's.
+    // bin; which one shows is `updateFace` below, not the stylesheet's doing.
     const number = new St.Label({
         text: String(index),
         style_class: 'mm-row-number',
@@ -341,6 +341,7 @@ export function createRow({index, title, subtitle, explicit = false, duration, s
         style_class: 'mm-row-play-icon',
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
+        visible: false,
     });
     const face = new St.Widget({layout_manager: new Clutter.BinLayout()});
     face.add_child(number);
@@ -350,6 +351,36 @@ export function createRow({index, title, subtitle, explicit = false, duration, s
         y_align: Clutter.ActorAlign.CENTER,
         child: face,
     }));
+
+    // The number shows by default; the play glyph takes over while a pointer
+    // is over the row, while it holds key focus, or once it is the track
+    // playing — crossing events and key-focus signals, per the Gotchas
+    // ("Hover on a tile is crossing events, not `track_hover`"), rather than
+    // a `:hover`/`:focus` CSS rule reaching into a child.
+    let hovered = false;
+    let focused = false;
+    let playing = nowPlaying;
+    const updateFace = () => {
+        const showGlyph = playing || hovered || focused;
+        number.visible = !showGlyph;
+        playGlyph.visible = showGlyph;
+    };
+    row.connect('enter-event', () => {
+        hovered = true;
+        updateFace();
+    });
+    row.connect('leave-event', () => {
+        hovered = false;
+        updateFace();
+    });
+    row.connect('key-focus-in', () => {
+        focused = true;
+        updateFace();
+    });
+    row.connect('key-focus-out', () => {
+        focused = false;
+        updateFace();
+    });
 
     const titleLabel = createLabel(title, 'mm-row-title', {x_expand: true, y_align: Clutter.ActorAlign.CENTER});
     const titleLine = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
@@ -381,11 +412,13 @@ export function createRow({index, title, subtitle, explicit = false, duration, s
 
     row.set_child(content);
     row.connect('clicked', () => onActivate?.());
-    row.setNowPlaying = playing => {
+    row.setNowPlaying = value => {
+        playing = value;
         if (playing)
             row.add_style_class_name('mm-row-playing');
         else
             row.remove_style_class_name('mm-row-playing');
+        updateFace();
     };
     row.setNowPlaying(nowPlaying);
     return row;
