@@ -35,7 +35,9 @@ function scriptPath() {
 
 // Run one am.py command. Resolves with its parsed JSON, rejects with AmError.
 // `cancellable` (a Gio.Cancellable) kills the child if the caller gives up,
-// e.g. a search superseded by the next keystroke.
+// e.g. a search superseded by the next keystroke. A caller that passes
+// `--no-start` is asking only if the engine happens to be up, so an
+// `engine-down` answer to it is an ordinary no rather than a warning.
 export function run(args, {cancellable = null} = {}) {
     return new Promise((resolve, reject) => {
         let proc;
@@ -69,8 +71,12 @@ export function run(args, {cancellable = null} = {}) {
             }
             const code = json?.error ?? (cancellable?.is_cancelled() ? 'cancelled' : 'crash');
             const message = json?.message ?? (stderr || '').trim().split('\n').pop() ?? '';
-            if (code !== 'cancelled')
-                console.warn(`[Music Menu] am.py ${args[0]} failed: ${code} ${message}`);
+            const expected = code === 'cancelled' ||
+                (code === 'engine-down' && args.includes('--no-start'));
+            if (!expected) {
+                const command = args.find(a => !String(a).startsWith('--')) ?? args[0];
+                console.warn(`[Music Menu] am.py ${command} failed: ${code} ${message}`);
+            }
             reject(new AmError(code, message));
         });
     });

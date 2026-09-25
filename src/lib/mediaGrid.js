@@ -291,7 +291,11 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
         // mixed kinds, so there the item says which it is.
         const round = section.round || (section.shelves && item.kind === 'artist');
         const icon = (section.shelves && KIND_ICON[item.kind]) || section.icon;
-        this.icon = new PosterIcon(item.title, item.subtitle, {
+        // An artist's subtitle is the word "Artist", which tells a mixed
+        // shelf what the tile is and a tab of nothing but artists nothing;
+        // there the album count says something instead.
+        const subtitle = section.round ? item.countLabel : item.subtitle;
+        this.icon = new PosterIcon(item.title, subtitle, {
             setSizeManually: true,
             createIcon: size => createArtwork({
                 path: item.art,
@@ -371,16 +375,21 @@ class MusicMenuMediaView extends BaseAppView {
         // page sat seven pixels lower than one with two, for the same
         // covers. gridFor budgets DOTS_HEIGHT for every view, so the dots
         // are faded rather than dropped and every section lands the same.
+        // Driven by the grid's own page count rather than by the dots'
+        // visibility: setNPages sets `visible` on every change of count,
+        // which notifies only when it differs, so a one-row shelf that went
+        // from one page to two, both times "visible", never heard of the
+        // second and kept the dots faded.
         const dots = this._pageIndicators;
         const holdRoom = () => {
-            if (!dots.visible) {
-                dots.visible = true;
-                dots.opacity = 0;
-            } else if (dots.get_n_children() > 1) {
-                dots.opacity = 255;
-            }
+            dots.visible = true;
+            dots.opacity = this._grid.nPages > 1 ? 255 : 0;
         };
-        dots.connect('notify::visible', holdRoom);
+        this._grid.connect('pages-changed', holdRoom);
+        dots.connect('notify::visible', () => {
+            if (!dots.visible)
+                holdRoom();
+        });
         holdRoom();
 
         this._section = section;
