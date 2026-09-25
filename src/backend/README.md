@@ -39,8 +39,18 @@ playback, `mk.playNext`/`mk.playLater`, `mk.shuffleMode`/`mk.repeatMode`,
 and `mk.isAuthorized`/`mk.storefrontId`. API failures come back as a 200
 with `{"errors": [...]}`, which `am.py` treats as a failure and retries.
 
-Every command starts the engine headless if it is not running, unless
-`--no-start` is given (`status` never starts it).
+Every command starts the engine if it is not running — headless, or
+visible when the `engine-headless` setting is off — unless `--no-start` is
+given (`status` never starts it). The shell passes `--no-start` for
+everything that only wants an answer if the engine happens to be up (search,
+the now-playing poll, lyrics, the queue), so typing in the overview never
+launches Chrome.
+
+The settings (`browser-command`, `engine-port`, `engine-headless`,
+`engine-autostart`) are read from the extension's own compiled schema in
+`../schemas/`, since an extension's schema is never in the system source;
+without `gschemas.compiled` there, the defaults stand. `sync` writes
+`last-sync` the same way.
 
 | Command | Result |
 |---|---|

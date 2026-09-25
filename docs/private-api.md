@@ -28,7 +28,8 @@ Apple Music endpoints).
 | `Main.overview._overview.controls`, `.appDisplay`, `._box` | mediaMenu.js | No overview menu; a warning once, if any tab is enabled | Yes, logs a warning |
 | `Main.overview.dash.showAppsButton` (`.checked`) | mediaMenu.js | The view can no longer tell "is the app grid up" from "is it ours" | No |
 | `controls._searchController`, `.searchActive` | mediaMenu.js | Workspaces do not reappear for a search while the menu is up | No, optional-chained |
-| `controls._searchController.addProvider(provider)` | searchProvider.js | Apple Music results simply never appear in the overview's search; nothing throws | No — public-ish but unstable, see below |
+| `Main.overview.searchController.addProvider(provider)` | searchProvider.js | Apple Music results simply never appear in the overview's search; nothing throws | No — a public getter and method, but not a documented extension API, see below |
+| `ProviderInfo.animateLaunch()` calling `Shell.AppSystem.lookup_app(appInfo.get_id())` | searchProvider.js | A click on the "Apple Music" heading over the results throws inside the shell's own handler | Yes — `get_id()` names `org.gnome.Shell.Extensions.desktop`, which the shell ships |
 | `controls._stateAdjustment` | mediaMenu.js | The workspace row is not folded/unfolded in step with the overview's own transition | No, optional-chained |
 | `controls.layout_manager._getAppDisplayBoxForState` (wrapped) | mediaMenu.js | The slot is never grown for the shelves/grid above the workspace row | Yes, guarded and chain-safe |
 | `Object.getPrototypeOf(AppDisplay.AppDisplay)` (`BaseAppView`) | mediaGrid.js | `MediaView`'s `_init` throws; no grid anywhere (Albums/Artists/Playlists/Radio) | No — a straight top-level throw |
@@ -72,16 +73,26 @@ new private reach, just a different child view shown for that tab.
 ## The overview search provider (searchProvider.js) — new
 
 ```js
-const controller = Main.overview._overview?.controls?._searchController ?? null;
-controller?.addProvider(this._provider);   // registered on enable
-controller?.removeProvider(this._provider); // unregistered on disable
+Main.overview.searchController.addProvider(this);    // registered on enable
+Main.overview.searchController.removeProvider(this); // unregistered on disable
 ```
 
 **What for.** `addProvider`/`removeProvider` on `SearchController` is how an
 extension puts its own `SearchProvider`-shaped object (`getInitialResultSet`,
 `getResultMetas`, `activateResult`, an `appInfo`/`id`) into GNOME's own
 overview search, so typing in the overview answers with Apple Music results
-(via `am.py search`) alongside apps and files.
+(via `am.py --no-start search`, so a search never starts Chrome) alongside
+apps and files. `Main.overview.searchController` is a public getter (it
+reaches `_overview.controls._searchController` for us).
+
+**The heading's own click.** A provider with an `appInfo` gets a labelled
+heading over its results, and the shell's `ProviderInfo.animateLaunch()`
+(search.js) answers a click on it with
+`Shell.AppSystem.get_default().lookup_app(appInfo.get_id())` and reads
+`.state` off the result without a null check. There is no installed app for
+this extension, so `get_id()` names `org.gnome.Shell.Extensions.desktop`,
+the hidden launcher gnome-shell installs alongside itself: it always
+resolves, and the click animates nothing rather than throwing.
 
 **Why nothing fully public.** GNOME does have a *supported*, D-Bus-based
 search-provider mechanism for standalone applications
@@ -94,13 +105,11 @@ several well-known extensions), but it is not part of the shell's exported,
 version-stable API surface — it's reached the same way `_searchController`
 already is elsewhere in `mediaMenu.js`.
 
-**If it changes.** `addProvider` missing or renamed: the call is
-optional-chained, so Apple Music results just never appear in the overview's
-search — everything else (search from inside the library's own tabs, if any)
-keeps working, and nothing throws.
-
-**Checked.** Optional-chained on both `_searchController` and `addProvider`
-itself.
+**If it changes.** `addProvider` missing or renamed: `register()` throws
+inside `enable()`'s try, and the extension carries on without search results.
+If gnome-shell ever stops shipping `org.gnome.Shell.Extensions.desktop`, the
+heading's click throws in the shell's handler once per click; the results
+themselves are unaffected.
 
 ## The app grid (mediaGrid.js)
 
