@@ -466,7 +466,8 @@ export class Player extends Signals.EventEmitter {
                         title: parsed.title,
                         artist: parsed.artist,
                         album: parsed.album,
-                        artUrl: parsed.artUrl,
+                        // Chrome's own temp-file art is its logo, not the cover; wait for the poll's.
+                        artUrl: /\/\.com\.google\.Chrome\./.test(parsed.artUrl ?? '') ? null : parsed.artUrl,
                         lengthUs: parsed.lengthUs,
                         catalogId: parsed.catalogId,
                         id: parsed.catalogId ?? parsed.trackId ?? null,
@@ -653,8 +654,6 @@ export class Player extends Signals.EventEmitter {
     // Fallback now-playing poll for shuffle, repeat, and track id
     // ------------------------------------------------------------------
     async _pollNowPlayingIfNeeded(force = false) {
-        if (this._hasMprisShuffle && this._hasMprisLoopStatus)
-            return;
         if (this._fetchingNowPlaying || this._destroyed)
             return;
 
@@ -702,6 +701,12 @@ export class Player extends Signals.EventEmitter {
                     }
                     if (res.track.catalogId && !this._track.catalogId) {
                         this._track.catalogId = res.track.catalogId;
+                        changed = true;
+                    }
+                    // Apple's own cover beats whatever MPRIS offered: headless
+                    // Chrome's media session art is the Chrome logo.
+                    if (res.track.artUrl && this._track.artUrl !== res.track.artUrl) {
+                        this._track.artUrl = res.track.artUrl;
                         changed = true;
                     }
                 } else if (res.track && !this._track && (res.state === 'playing' || res.state === 'paused')) {

@@ -4,7 +4,10 @@
  */
 
 (function () {
-    if (window.__musicMenu) {
+    // am.py sets __musicMenuWanted to a hash of this file before injecting,
+    // so an engine left running across an update picks up the new bridge
+    // instead of keeping the one it was first given.
+    if (window.__musicMenu && window.__musicMenu.__version === window.__musicMenuWanted) {
         return;
     }
 
@@ -65,6 +68,10 @@
             durationMs: durationMs,
             durationLabel: formatDuration(durationMs),
             explicit: attrs.contentRating === 'explicit',
+            // Headless Chrome hands MPRIS its own logo as the art, so the
+            // player takes the real cover from here instead.
+            artUrl: (attrs.artwork && attrs.artwork.url)
+                ? attrs.artwork.url.replace('{w}', '256').replace('{h}', '256') : null,
             index: typeof index === 'number' ? index : 0
         };
     }
@@ -121,6 +128,7 @@
     }
 
     window.__musicMenu = {
+        __version: window.__musicMenuWanted,
         status: function () {
             const mk = getMusicKit();
             return {

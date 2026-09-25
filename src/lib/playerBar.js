@@ -48,7 +48,7 @@ export class PlayerBar {
         this._buildActor();
 
         this._changedId = player.connect('changed', () => this._render());
-        this._positionId = player.connect('position', posUs => this._onPosition(posUs));
+        this._positionId = player.connect('position', (_player, posUs) => this._onPosition(posUs));
 
         this._render();
     }
@@ -137,6 +137,10 @@ export class PlayerBar {
         this._playBtn = createIconButton('media-playback-start-symbolic', {styleClass: 'icon-button mm-player-bar-play', accessibleName: 'Play'});
         this._nextBtn = createIconButton('media-skip-forward-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Next'});
         this._repeatBtn = createIconButton('media-playlist-repeat-symbolic', {styleClass: 'icon-button mm-player-bar-btn', accessibleName: 'Repeat'});
+        // A horizontal box stretches its children to its height, which pulls
+        // these round icon-buttons into pills; keep them their natural square.
+        for (const btn of [this._shuffleBtn, this._prevBtn, this._nextBtn, this._repeatBtn])
+            btn.y_align = Clutter.ActorAlign.CENTER;
         this._shuffleBtn.connect('clicked', () => this._toggleShuffle());
         this._prevBtn.connect('clicked', () => this._player.previous());
         this._playBtn.connect('clicked', () => this._player.playPause());

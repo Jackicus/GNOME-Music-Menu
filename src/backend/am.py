@@ -7,6 +7,7 @@ Error codes: engine-down, not-signed-in, api, timeout, usage.
 """
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import shutil
@@ -242,19 +243,24 @@ def ensure_bridge(client, timeout=15):
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge.js")
     with open(bridge_path, "r", encoding="utf-8") as f:
         bridge_code = f.read()
+    version = hashlib.sha1(bridge_code.encode("utf-8")).hexdigest()[:12]
+    bridge_code = f"window.__musicMenuWanted = {json.dumps(version)};\n" + bridge_code
 
-    # Idempotent injection
-    client.evaluate(bridge_code, await_promise=False)
-
+    # The page navigates on its own while it starts (music.apple.com redirects
+    # to /<storefront>/new), and a navigation wipes `window`, so an injection
+    # made during start-up is lost. Keep re-injecting (it is idempotent) until
+    # the bridge reports MusicKit ready.
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
+            client.evaluate(bridge_code, await_promise=False)
             st = client.evaluate("window.__musicMenu ? window.__musicMenu.status() : null")
             if st and st.get("ready"):
                 return
         except Exception:
             pass
-        time.sleep(0.2)
+        time.sleep(0.3)
+    raise AmError("timeout", "music.apple.com did not become ready (MusicKit not loaded)")
 
 
 def engine_start(headless=None):
