@@ -1,5 +1,7 @@
-// One item up close: artwork and primary action on the left, title, facts,
-// synopsis and the group list (seasons, files) on the right.
+// One item up close: artwork and Play/Shuffle on the left, title, facts,
+// summary and the track list (grouped into discs, or albums for an artist)
+// on the right. A station has no groups: just the art, title, summary and a
+// single big Play button.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -8,9 +10,9 @@ import Pango from 'gi://Pango';
 
 import {Duration, Ease, slideSwap, staggerIn} from './anim.js';
 import {fillOnScroll} from './lazyList.js';
-import {artworkStyle, createArtwork, createActionButton, createLabel, createPill, createRow} from './widgets.js';
+import {createArtwork, createActionButton, createLabel, createRow} from './widgets.js';
 import {PANE_INSET, radiusStyle} from './shape.js';
-import {Tracker} from './tracking.js';
+import {run} from './amctl.js';
 import {adjustAnimationTime, ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
 // What the pane keeps around its content, per frame; the stylesheet carries
@@ -26,44 +28,43 @@ import {adjustAnimationTime, ensureActorVisibleInScrollView} from 'resource:///o
 // the artwork is the two together, and it comes to the same 32 either way.
 const PADDING = {pane: 28, bare: 32 - PANE_INSET};
 
-// The hero fills the pane's height, less its padding and the two action
+// The hero fills the pane's height, less its padding and the row of action
 // buttons beneath it, up to this cap. It stops well short of a big screen:
 // the popup is a panel the size of a folder's, not the work area, and the
 // desktop pane keeps to the same proportions.
 const HERO_MAX_HEIGHT = 560;
-const HERO_RESERVED = 2 * 52 + 28;         // two action buttons and the gaps
+const HERO_RESERVED = 52 + 16;             // one row of action buttons and the gap
 const HERO_MAX_WIDTH_FRACTION = 0.34;      // of the pane width
 // The hero's floor on a small work area — see `_heroSize`.
 const HERO_MIN = 132;
 // 14px type at the stylesheet's line-height: 1.5.
 const SUMMARY_LINE = 21;
 const SUMMARY_LINES = 5;
-// A season runs to a couple of dozen episodes, a film's files to a handful.
-// The first batch is a screenful — and the one that is staggered in — and the
-// rest follow as the list scrolls.
+// A disc runs to a couple of dozen tracks, an artist's album list to a
+// handful of groups. The first batch is a screenful — and the one that is
+// staggered in — and the rest follow as the list scrolls.
 const FIRST_ROWS = 24;
 const ROWS_PER_BATCH = 16;
 
 export class DetailView {
     // `frame` is what the pane draws around itself: its own rounded, bordered
     // surface ('pane'), or nothing ('bare') when what holds it is the surface —
-    // the shell's folder panel, in the popup.
-    constructor({onOpen, tracker = null, frame = 'pane'}) {
-        this._onOpen = onOpen;
-        this._tracker = tracker;
-        this._section = null;
+    // the shell's folder panel, in the popup. `onMenu` is called with
+    // `{item, track, sourceActor}` for a row's ••• — the caller (app.js) opens
+    // `itemMenu.js`'s popup menu at `sourceActor`.
+    constructor({onMenu = null, frame = 'pane'} = {}) {
+        this._onMenu = onMenu;
         this._frame = frame;
+        this._section = null;
         this._groups = [];
         this._groupIndex = 0;
         this._list = null;
         this._listHost = null;
-        // The rows of the list showing, by path, for a mark made elsewhere.
-        this._watchRows = new Map();
-        // The primary button, what it plays now, and every path of the item
-        // shown whose mark or position could move it on.
-        this._play = null;
-        this._playPath = null;
-        this._playable = new Set();
+        // The rows of the current list, by catalogId (or id), for
+        // `setNowPlayingTrack` to mark without rebuilding anything.
+        this._trackRows = new Map();
+        this._nowPlayingRow = null;
+        this._nowPlayingKey = null;
         this._tabButtons = [];
         this._width = 0;
         this._height = 0;
@@ -81,12 +82,6 @@ export class DetailView {
             x_expand: true,
             y_expand: true,
         });
-        // Playing a file marks it: the row for it may be right there.
-        tracker?.connectObject('changed', (_tracker, path, watched) => {
-            this._watchRows.get(path)?.setWatched(watched);
-            if (this._play && this._playable.has(path))
-                this._syncPlay();
-        }, this.actor);
     }
 
     destroy() {
@@ -130,51 +125,20 @@ export class DetailView {
     }
 
     // Hero size for this screen: as tall as the pane allows, capped so the
-    // text column keeps its share of the width.
-    _heroSize(aspect) {
+    // text column keeps its share of the width. Every lockup is square —
+    // round artist artwork is the same square art, cropped by `shape.js`'s
+    // `round` radius rather than a different aspect.
+    _heroSize() {
         const scale = this._scale;
         const room = this._height - 2 * this.padding - HERO_RESERVED * scale;
         const byHeight = Math.min(HERO_MAX_HEIGHT * scale, room);
-        const byWidth = Math.round(this._width * HERO_MAX_WIDTH_FRACTION * aspect);
+        const byWidth = Math.round(this._width * HERO_MAX_WIDTH_FRACTION);
         // A small screen at the smallest `detail-size` leaves less room than
         // the buttons under the artwork take, and the artwork would come out
         // at nothing or below it. HERO_MIN is the floor; the panel grows
         // around it, since it is sized from the column's own height.
         const height = Math.max(HERO_MIN * scale, Math.min(byHeight, byWidth));
-        return {width: Math.round(height / aspect), height};
-    }
-
-    // The primary button carries on from where the tracker says this was
-    // left — the episode partway through, or the one after the last watched
-    // — and says so; with nothing touched, or all of it watched, it plays
-    // what the scan put there. A film has the one file to carry on with.
-    _syncPlay() {
-        const item = this.item;
-        this._playPath = item.playPath;
-        this._playable = new Set();
-        let label = item.playLabel;
-        if (this._tracker?.enabled && Tracker.tracks(this._section)) {
-            const groups = this._groups;
-            const inRun = groups.filter(g => g.season).flatMap(g => g.entries);
-            const order = inRun.length ? inRun.map(e => e.path) : [item.playPath];
-            const others = inRun.length
-                ? groups.filter(g => !g.season).flatMap(g => g.entries).map(e => e.path)
-                : [];
-            this._playable = new Set([...order, ...others]);
-            const path = this._tracker.continueFrom(order, others);
-            if (path && (path !== item.playPath || this._tracker.positionOf(path))) {
-                const code = groups.flatMap(g => g.entries).find(e => e.path === path)?.code;
-                this._playPath = path;
-                label = code ? `Continue ${code}` : 'Continue';
-            }
-        }
-        this._play.setLabel(label);
-    }
-
-    // Everything the pane opens goes out with the section it was shown for,
-    // since what a file opens with is that section's setting.
-    _open(path) {
-        this._onOpen(path, this._section);
+        return {width: Math.round(height), height};
     }
 
     // `mainColumn` is when the second column — the title, the facts and the
@@ -190,15 +154,11 @@ export class DetailView {
         this._groupIndex = 0;
         this._list = null;
         this._listHost = null;
-        this._watchRows = new Map();
-        this._play = null;
-        this._playPath = null;
-        this._playable = new Set();
+        this._trackRows = new Map();
+        this._nowPlayingRow = null;
         this._main = null;
         this._tabButtons = [];
 
-        // The pane stacks an optional backdrop (TMDB's wide artwork, dimmed)
-        // beneath the two-column content, both clipped to the pane's corners.
         const radius = this._paneRadius;
         const pane = new St.Widget({
             style_class: this._frame === 'bare' ? 'mm-pane mm-pane-bare' : 'mm-pane',
@@ -210,29 +170,16 @@ export class DetailView {
         });
         this.actor.add_child(pane);
 
-        if (item.backdrop) {
-            const backdrop = new St.Widget({style_class: 'mm-backdrop', x_expand: true, y_expand: true});
-            backdrop.set_style(artworkStyle(item.backdrop, radius));
-            pane.add_child(backdrop);
-            // A dark veil keeps the text readable over bright artwork.
-            pane.add_child(new St.Widget({
-                style_class: 'mm-backdrop-veil',
-                x_expand: true,
-                y_expand: true,
-                style: radiusStyle(radius),
-            }));
-        }
-
         const columns = new St.BoxLayout({style_class: 'mm-pane-content', x_expand: true, y_expand: true});
         pane.add_child(columns);
         this._columns = columns;
-        this.side = this._buildSide(item, section);
+        this.side = this._buildSide(item);
         columns.add_child(this.side);
 
         // Only the artwork and its buttons are built now. The rest is built on
         // the next idle, off the frames of the flight or the zoom that is
         // opening the pane, and the list inside it later still as it scrolls.
-        this._buildPendingMain = () => this._buildMain(item, section);
+        this._buildPendingMain = () => this._buildMain(item);
         this._deferredMain = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._deferredMain = 0;
             this._addMain();
@@ -289,73 +236,89 @@ export class DetailView {
         this._main?.ease({opacity: 0, duration, mode: Ease.OUT});
     }
 
-    // Left: artwork, primary action, folder shortcut.
-    _buildSide(item, section) {
+    // Mark the row playing `catalogIdOrId` (a track's catalogId, or its id
+    // when it has none) across whatever group is showing — or clear the mark
+    // when nothing here is playing. Called from app.js on the player's
+    // 'changed'; a track outside the current group, or outside this item
+    // altogether, just means no row lights up.
+    setNowPlayingTrack(catalogIdOrId) {
+        this._nowPlayingKey = catalogIdOrId ?? null;
+        if (this._nowPlayingRow) {
+            this._nowPlayingRow.setNowPlaying(false);
+            this._nowPlayingRow = null;
+        }
+        const row = this._nowPlayingKey != null ? this._trackRows.get(this._nowPlayingKey) : null;
+        if (row) {
+            row.setNowPlaying(true);
+            this._nowPlayingRow = row;
+        }
+    }
+
+    // Left: artwork, then Play/Shuffle — or, for a station, one big Play.
+    _buildSide(item) {
         // x_expand is set explicitly to false: Clutter otherwise treats a parent
         // as expanding when any descendant expands (the buttons do), and the
         // side column would swallow half of the free width.
         const side = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mm-detail-side', x_expand: false, y_expand: true});
 
-        const {width: heroW, height: heroH} = this._heroSize(section.aspect);
+        const {width: heroW, height: heroH} = this._heroSize();
         this.hero = createArtwork({
             path: item.art,
             title: item.title,
-            icon: section.icon,
+            icon: this._section?.icon ?? 'audio-x-generic-symbolic',
             width: heroW,
             height: heroH,
             styleClass: 'mm-art mm-hero',
-            radius: 'hero',
+            radius: item.kind === 'artist' ? 'round' : 'hero',
         });
         side.add_child(this.hero);
 
-        if (item.playPath) {
-            const opensFolder = item.playLabel === 'Open folder';
-            const play = createActionButton({
-                label: item.playLabel,
-                icon: opensFolder ? 'folder-open-symbolic' : 'media-playback-start-symbolic',
+        if (!item.play)
+            return side;
+
+        const play = (label, extra, styleClass) => {
+            const button = createActionButton({
+                label,
+                icon: 'media-playback-start-symbolic',
+                ...(styleClass ? {styleClass} : {}),
             });
-            play.set_x_expand(true);
-            play.connect('clicked', () => this._open(this._playPath ?? item.playPath));
-            side.add_child(play);
-            this._play = play;
-            this._syncPlay();
+            button.set_x_expand(true);
+            button.connect('clicked', () => run(['play', item.play.kind, item.play.id, ...extra]).catch(() => {}));
+            return button;
+        };
+
+        if (this._groups.length === 0) {
+            // A station: nothing to shuffle, so just the one big button.
+            side.add_child(play('Play', [], 'button default mm-action mm-action-big'));
+            return side;
         }
 
-        if (item.folder && item.playPath !== item.folder) {
-            const folder = createActionButton({
-                label: 'Show in Files',
-                icon: 'folder-symbolic',
-                styleClass: 'button mm-action-secondary',
-            });
-            folder.set_x_expand(true);
-            folder.connect('clicked', () => this._open(item.folder));
-            side.add_child(folder);
-        }
+        const actions = new St.BoxLayout({style_class: 'mm-detail-actions', x_expand: true});
+        actions.add_child(play('Play', []));
+        const shuffle = createActionButton({label: 'Shuffle', icon: 'media-playlist-shuffle-symbolic', styleClass: 'button mm-action-secondary'});
+        shuffle.set_x_expand(true);
+        shuffle.connect('clicked', () => run(['play', item.play.kind, item.play.id, '--shuffle']).catch(() => {}));
+        actions.add_child(shuffle);
+        side.add_child(actions);
 
         return side;
     }
 
-    // Right: title, facts, synopsis, group tabs, list.
-    _buildMain(item, section) {
+    // Right: title, artist, facts line, summary, group tabs, list.
+    _buildMain(item) {
         const main = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_expand: true, style_class: 'mm-detail-main'});
+        const isStation = this._groups.length === 0;
 
         main.add_child(createLabel(item.title, 'mm-detail-title'));
-        if (item.tagline)
-            main.add_child(createLabel(item.tagline, 'mm-tagline'));
 
-        const facts = new St.BoxLayout({style_class: 'mm-facts', y_align: Clutter.ActorAlign.CENTER});
-        if (item.year)
-            facts.add_child(createPill(String(item.year), 'mm-fact'));
-        if (item.rating)
-            facts.add_child(createPill(`★ ${item.rating}`, 'mm-fact mm-fact-rating'));
-        if (item.countLabel)
-            facts.add_child(createPill(item.countLabel, 'mm-fact'));
-        if (item.groupLabel)
-            facts.add_child(createPill(item.groupLabel, 'mm-fact'));
-        for (const tag of item.tags)
-            facts.add_child(createPill(tag, 'mm-fact mm-fact-tag'));
-        if (facts.get_n_children())
-            main.add_child(facts);
+        if (!isStation && item.subtitle)
+            main.add_child(createLabel(item.subtitle, 'mm-detail-subtitle'));
+
+        if (!isStation) {
+            const facts = [item.genre, item.year ? String(item.year) : null, item.countLabel].filter(Boolean);
+            if (facts.length)
+                main.add_child(createLabel(facts.join(' · '), 'mm-facts-line'));
+        }
 
         if (item.summary) {
             const summary = new St.Label({text: item.summary, style_class: 'mm-summary', x_expand: true});
@@ -368,12 +331,15 @@ export class DetailView {
             main.add_child(summary);
         }
 
-        // A season is a tab even when it is the only one, so a one-season
-        // show reads like the rest; a film's lone group of files is a heading.
-        if (this._groups.length > 1 || this._groups[0]?.season)
+        // A station has no groups and no track list: art, title, summary,
+        // Play, and nothing below it.
+        if (isStation)
+            return main;
+
+        // Groups (discs, or albums for an artist) are tabs, hidden when
+        // there is only the one — a single-disc album reads as a plain list.
+        if (this._groups.length > 1)
             main.add_child(this._buildTabs());
-        else if (this._groups.length === 1)
-            main.add_child(new St.Label({text: this._groups[0].name, style_class: 'mm-group-heading'}));
 
         this._listHost = new St.Widget({
             layout_manager: new Clutter.BinLayout(),
@@ -438,10 +404,13 @@ export class DetailView {
         const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'mm-list'});
         scroll.set_child(box);
 
+        const item = this.item;
         const entries = group.entries;
-        // An episode or a film's file can be ticked off as watched.
-        const tracker = this._tracker?.enabled && Tracker.tracks(this._section) ? this._tracker : null;
-        const watchRows = this._watchRows = new Map();
+        // A compilation's or an artist's rows need the artist under the
+        // title; an album's own tracklist already says it once, at the top.
+        const showArtist = item.kind !== 'album';
+        const trackRows = this._trackRows = new Map();
+        this._nowPlayingRow = null;
         let next = 0;
         let first = true;
         fillOnScroll(scroll, () => {
@@ -449,18 +418,22 @@ export class DetailView {
             const batch = [];
             for (; next < limit; next++) {
                 const entry = entries[next];
+                const key = entry.catalogId ?? entry.id;
                 const row = createRow({
-                    index: entry.index,
+                    index: entry.trackNumber,
                     title: entry.title,
-                    subtitle: entry.subtitle,
-                    badges: entry.badges,
-                    size: entry.size,
-                    onActivate: () => this._open(entry.path),
-                    watched: tracker && entry.path ? tracker.isWatched(entry.path) : null,
-                    onWatched: watched => tracker.setWatched(entry.path, watched),
+                    subtitle: showArtist ? entry.artist : null,
+                    explicit: entry.explicit,
+                    duration: entry.durationLabel,
+                    nowPlaying: key != null && key === this._nowPlayingKey,
+                    onActivate: () => run(['play', group.play.kind, group.play.id, '--start-with', String(entry.index)]).catch(() => {}),
+                    onMenu: sourceActor => this._onMenu?.({item, track: entry, sourceActor}),
                 });
-                if (tracker && entry.path)
-                    watchRows.set(entry.path, row);
+                if (key != null) {
+                    trackRows.set(key, row);
+                    if (key === this._nowPlayingKey)
+                        this._nowPlayingRow = row;
+                }
                 // Keyboard focus has to drag the view after it, or a Tab past
                 // the fold never scrolls and so never tops the list up.
                 row.connect('key-focus-in', () => ensureActorVisibleInScrollView(scroll, row));

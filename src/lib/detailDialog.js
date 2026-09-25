@@ -35,7 +35,7 @@ import {PANE_INSET} from './shape.js';
 
 export const DetailDialog = GObject.registerClass(
 class MusicMenuDetailDialog extends MediaPanel {
-    _init({onOpen, tracker, size = 1, mode = 'menu'}) {
+    _init({onMenu, size = 1, mode = 'menu'}) {
         super._init({
             size,
             // In "modal" the panel outlives the overview that may have been
@@ -63,7 +63,7 @@ class MusicMenuDetailDialog extends MediaPanel {
         this._panel.add_child(this._clip);
 
         // The folder's panel is the surface here, so the pane draws none.
-        this._detail = new DetailView({onOpen, tracker, frame: 'bare'});
+        this._detail = new DetailView({onMenu, frame: 'bare'});
         this._detail.actor.set_position(0, 0);
         this._clip.add_child(this._detail.actor);
 
@@ -190,5 +190,11 @@ class MusicMenuDetailDialog extends MediaPanel {
         }
 
         super.popup(source);
+    }
+
+    // Passed straight through, so app.js can call this on whichever of
+    // DetailView/DetailDialog is showing the item without asking which.
+    setNowPlayingTrack(catalogIdOrId) {
+        this._detail.setNowPlayingTrack(catalogIdOrId);
     }
 });
