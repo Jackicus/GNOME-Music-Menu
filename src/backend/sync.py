@@ -13,7 +13,6 @@ import html
 import json
 import os
 import re
-import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -144,13 +143,6 @@ def artwork_filename(url: str) -> str:
 def artwork_cache_path(url: str, cache_dir: str) -> str:
     """Return the absolute path in the cache directory for an artwork URL."""
     return os.path.join(cache_dir, "art", artwork_filename(url))
-
-
-def get_artwork_cache_path(url: str, cache_dir: str) -> str | None:
-    """Alias for artwork_cache_path with None safety."""
-    if not url or not cache_dir:
-        return None
-    return artwork_cache_path(url, cache_dir)
 
 
 def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0) -> str | None:
@@ -290,22 +282,9 @@ def collect_art_paths(library_data: dict) -> set[str]:
     return paths
 
 
-def prune_art(cache_dir_or_data, referenced_paths_or_cache_dir=None) -> int:
-    """Remove artwork files in <cache_dir>/art/ that are no longer referenced.
-
-    Supports two signatures:
-      prune_art(cache_dir: str, referenced_paths: set[str]) -> int
-      prune_art(library_data: dict, cache_dir: str) -> int
-    Returns the count of pruned files.
-    """
-    if isinstance(cache_dir_or_data, dict):
-        library_data = cache_dir_or_data
-        cache_dir = referenced_paths_or_cache_dir
-        referenced_paths = collect_art_paths(library_data)
-    else:
-        cache_dir = cache_dir_or_data
-        referenced_paths = referenced_paths_or_cache_dir if referenced_paths_or_cache_dir is not None else set()
-
+def prune_art(library_data: dict, cache_dir: str) -> int:
+    """Remove artwork files in <cache_dir>/art/ that the library no longer
+    refers to. Returns the count of pruned files."""
     if not cache_dir:
         return 0
 
@@ -314,10 +293,9 @@ def prune_art(cache_dir_or_data, referenced_paths_or_cache_dir=None) -> int:
         return 0
 
     norm_refs = set()
-    for p in referenced_paths:
-        if p:
-            norm_refs.add(os.path.abspath(p))
-            norm_refs.add(os.path.basename(p))
+    for p in collect_art_paths(library_data):
+        norm_refs.add(os.path.abspath(p))
+        norm_refs.add(os.path.basename(p))
 
     pruned = 0
     try:
@@ -388,6 +366,16 @@ def _extract_summary(attrs: dict, raw_item: dict) -> str | None:
         summary = raw_item["summary"]
 
     return strip_html(summary)
+
+
+def _extract_genre(attrs: dict, raw_item: dict) -> str | None:
+    """The first genre name, from the attributes or the raw item."""
+    genre_names = attrs.get("genreNames") or raw_item.get("genreNames")
+    if isinstance(genre_names, list) and genre_names:
+        return genre_names[0]
+    if isinstance(genre_names, str):
+        return genre_names
+    return raw_item.get("genre") or None
 
 
 def _extract_artwork(attrs: dict, raw_item: dict, cache_dir: str | None) -> tuple[str | None, str | None]:
@@ -508,48 +496,26 @@ def normalize_track(raw_track: dict, index: int = 0) -> dict:
     }
 
 
-def normalize_album(
-    raw_album: dict,
-    tracks_or_cache_dir=None,
-    cache_dir: str | None = None,
-    tracks: list[dict] | None = None,
-) -> dict:
+def normalize_album(raw_album: dict, cache_dir: str | None = None, tracks: list[dict] | None = None) -> dict:
     """Turn an Apple Music API album into the Item shape with kind='album'.
 
-    Supports both signatures:
-      normalize_album(raw_album, tracks=None, cache_dir=None)
-      normalize_album(raw_album, cache_dir=None, tracks=None)
-    Groups tracks by discNumber: groups = [{"name": f"Disc {disc}", "play": {"kind": "album", "id": item_id}, "entries": [...]}]
+    `tracks` are the album's songs when the caller fetched them separately;
+    otherwise the album's own `tracks` relationship is read. Tracks are
+    grouped by disc: groups = [{"name": "Disc 1", "play": {...}, "entries": [...]}].
     """
-    if isinstance(tracks_or_cache_dir, str):
-        actual_cache_dir = tracks_or_cache_dir
-        actual_tracks = tracks
-    else:
-        actual_tracks = tracks if tracks is not None else (tracks_or_cache_dir if isinstance(tracks_or_cache_dir, list) else None)
-        actual_cache_dir = cache_dir
-
     attrs = raw_album.get("attributes") or {}
     item_id = str(raw_album.get("id") or "")
     title = attrs.get("name") or raw_album.get("title") or ""
     subtitle = attrs.get("artistName") or raw_album.get("subtitle") or "Apple Music"
     year = _extract_year(attrs, raw_album)
-
-    genre_names = attrs.get("genreNames") or raw_album.get("genreNames")
-    genre = None
-    if isinstance(genre_names, list) and len(genre_names) > 0:
-        genre = genre_names[0]
-    elif isinstance(genre_names, str):
-        genre = genre_names
-    elif raw_album.get("genre"):
-        genre = raw_album["genre"]
-
+    genre = _extract_genre(attrs, raw_album)
     summary = _extract_summary(attrs, raw_album)
-    art, art_color = _extract_artwork(attrs, raw_album, actual_cache_dir)
+    art, art_color = _extract_artwork(attrs, raw_album, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_album, "albums")
     url = attrs.get("url") or raw_album.get("url")
 
     # Resolve track list
-    raw_tracks = actual_tracks
+    raw_tracks = tracks
     if raw_tracks is None:
         rel_tracks = raw_album.get("relationships", {}).get("tracks", {}).get("data")
         if isinstance(rel_tracks, list):
@@ -640,47 +606,25 @@ def normalize_album(
     }
 
 
-def normalize_artist(
-    raw_artist: dict,
-    albums_or_cache_dir=None,
-    cache_dir: str | None = None,
-    albums: list[dict] | None = None,
-) -> dict:
+def normalize_artist(raw_artist: dict, cache_dir: str | None = None, albums: list[dict] | None = None) -> dict:
     """Turn an Apple Music API artist into the Item shape with kind='artist'.
 
-    Supports both signatures:
-      normalize_artist(raw_artist, albums=None, cache_dir=None)
-      normalize_artist(raw_artist, cache_dir=None, albums=None)
+    `albums` are the artist's albums (raw, or already normalized) when the
+    caller fetched them; otherwise the `albums` relationship is read.
     subtitle='Artist', groups=[one group per album].
     """
-    if isinstance(albums_or_cache_dir, str):
-        actual_cache_dir = albums_or_cache_dir
-        actual_albums = albums
-    else:
-        actual_albums = albums if albums is not None else (albums_or_cache_dir if isinstance(albums_or_cache_dir, list) else None)
-        actual_cache_dir = cache_dir
-
     attrs = raw_artist.get("attributes") or {}
     item_id = str(raw_artist.get("id") or "")
     title = attrs.get("name") or raw_artist.get("title") or ""
     subtitle = "Artist"
     year = None
-
-    genre_names = attrs.get("genreNames") or raw_artist.get("genreNames")
-    genre = None
-    if isinstance(genre_names, list) and len(genre_names) > 0:
-        genre = genre_names[0]
-    elif isinstance(genre_names, str):
-        genre = genre_names
-    elif raw_artist.get("genre"):
-        genre = raw_artist["genre"]
-
+    genre = _extract_genre(attrs, raw_artist)
     summary = _extract_summary(attrs, raw_artist)
-    art, art_color = _extract_artwork(attrs, raw_artist, actual_cache_dir)
+    art, art_color = _extract_artwork(attrs, raw_artist, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_artist, "artists")
     url = attrs.get("url") or raw_artist.get("url")
 
-    raw_albums = actual_albums
+    raw_albums = albums
     if raw_albums is None:
         rel_albums = raw_artist.get("relationships", {}).get("albums", {}).get("data")
         if isinstance(rel_albums, list):
@@ -703,7 +647,7 @@ def normalize_artist(
             if alb.get("explicit"):
                 has_explicit = True
         else:
-            norm_alb = normalize_album(alb, cache_dir=actual_cache_dir)
+            norm_alb = normalize_album(alb, cache_dir=cache_dir)
             all_entries = []
             for g in norm_alb.get("groups", []):
                 all_entries.extend(g.get("entries", []))
@@ -737,26 +681,13 @@ def normalize_artist(
     }
 
 
-def normalize_playlist(
-    raw_playlist: dict,
-    tracks_or_cache_dir=None,
-    cache_dir: str | None = None,
-    tracks: list[dict] | None = None,
-) -> dict:
+def normalize_playlist(raw_playlist: dict, cache_dir: str | None = None, tracks: list[dict] | None = None) -> dict:
     """Turn an Apple Music API playlist into the Item shape with kind='playlist'.
 
-    Supports both signatures:
-      normalize_playlist(raw_playlist, tracks=None, cache_dir=None)
-      normalize_playlist(raw_playlist, cache_dir=None, tracks=None)
-    groups=[{"name": "Playlist", "play": {"kind": "playlist", "id": item_id}, "entries": [...]}]
+    `tracks` are the playlist's songs when the caller fetched them; otherwise
+    the `tracks` relationship is read.
+    groups=[{"name": "Tracks", "play": {"kind": "playlist", "id": item_id}, "entries": [...]}]
     """
-    if isinstance(tracks_or_cache_dir, str):
-        actual_cache_dir = tracks_or_cache_dir
-        actual_tracks = tracks
-    else:
-        actual_tracks = tracks if tracks is not None else (tracks_or_cache_dir if isinstance(tracks_or_cache_dir, list) else None)
-        actual_cache_dir = cache_dir
-
     attrs = raw_playlist.get("attributes") or {}
     item_id = str(raw_playlist.get("id") or "")
     title = attrs.get("name") or raw_playlist.get("title") or ""
@@ -767,22 +698,13 @@ def normalize_playlist(
         or "Apple Music"
     )
     year = _extract_year(attrs, raw_playlist)
-
-    genre_names = attrs.get("genreNames") or raw_playlist.get("genreNames")
-    genre = None
-    if isinstance(genre_names, list) and len(genre_names) > 0:
-        genre = genre_names[0]
-    elif isinstance(genre_names, str):
-        genre = genre_names
-    elif raw_playlist.get("genre"):
-        genre = raw_playlist["genre"]
-
+    genre = _extract_genre(attrs, raw_playlist)
     summary = _extract_summary(attrs, raw_playlist)
-    art, art_color = _extract_artwork(attrs, raw_playlist, actual_cache_dir)
+    art, art_color = _extract_artwork(attrs, raw_playlist, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_playlist, "playlists")
     url = attrs.get("url") or raw_playlist.get("url")
 
-    raw_tracks = actual_tracks
+    raw_tracks = tracks
     if raw_tracks is None:
         rel_tracks = raw_playlist.get("relationships", {}).get("tracks", {}).get("data")
         if isinstance(rel_tracks, list):
@@ -858,16 +780,7 @@ def normalize_station(raw_station: dict, cache_dir: str | None = None) -> dict:
         or "Apple Music Radio"
     )
     year = None
-
-    genre_names = attrs.get("genreNames") or raw_station.get("genreNames")
-    genre = None
-    if isinstance(genre_names, list) and len(genre_names) > 0:
-        genre = genre_names[0]
-    elif isinstance(genre_names, str):
-        genre = genre_names
-    elif raw_station.get("genre"):
-        genre = raw_station["genre"]
-
+    genre = _extract_genre(attrs, raw_station)
     summary = _extract_summary(attrs, raw_station)
     art, art_color = _extract_artwork(attrs, raw_station, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_station, "stations")
@@ -913,8 +826,7 @@ def normalize_song_as_item(raw_song: dict, cache_dir: str | None = None) -> dict
         duration_ms = 0
 
     year = _extract_year(attrs, raw_song)
-    genre_names = attrs.get("genreNames") or raw_song.get("genreNames")
-    genre = genre_names[0] if isinstance(genre_names, list) and genre_names else None
+    genre = _extract_genre(attrs, raw_song)
 
     return {
         "id": item_id,
@@ -960,41 +872,6 @@ def normalize_item(raw_item: dict, cache_dir: str | None = None, include_groups:
     if not include_groups:
         item["groups"] = []
     return item
-
-
-def normalize_shelf_item(raw_item: dict, cache_dir: str | None = None) -> dict:
-    """Normalize a single shelf item by inferring its kind/type."""
-    if (
-        isinstance(raw_item, dict)
-        and raw_item.get("kind") in ("album", "playlist", "artist", "station")
-        and "groups" in raw_item
-        and "play" in raw_item
-    ):
-        return raw_item
-
-    return normalize_item(raw_item, cache_dir=cache_dir, include_groups=True)
-
-
-def normalize_shelf(
-    key: str,
-    title: str,
-    raw_items: list[dict],
-    cache_dir: str | None = None,
-) -> dict:
-    """Turn a list of raw shelf items into a shelf object.
-
-    Returns {"key": key, "title": title, "items": [Item, ...]}.
-    """
-    items = []
-    for item in raw_items:
-        if isinstance(item, dict):
-            items.append(normalize_shelf_item(item, cache_dir=cache_dir))
-
-    return {
-        "key": key,
-        "title": title,
-        "items": items,
-    }
 
 
 def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None = None) -> tuple[list[dict], list[dict]]:
@@ -1077,28 +954,6 @@ def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None
         artists_list.append(artist_norm)
 
     return albums_list, artists_list
-
-
-def build_library_json(storefront: str, sections: dict, shelves: list) -> dict:
-    """Build the complete library.json structure adhering to the AGENTS.md schema."""
-    clean_sections = {
-        "albums": sections.get("albums", []),
-        "artists": sections.get("artists", []),
-        "playlists": sections.get("playlists", []),
-        "radio": sections.get("radio", []),
-    }
-    for k, v in sections.items():
-        if k not in clean_sections:
-            clean_sections[k] = v
-
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {
-        "version": 1,
-        "generated": now_iso,
-        "storefront": storefront,
-        "sections": clean_sections,
-        "shelves": list(shelves),
-    }
 
 
 def save_library(library_data: dict, cache_dir: str, only: str | None = None) -> None:

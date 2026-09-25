@@ -45,7 +45,7 @@ class TestSync(unittest.TestCase):
         formatted_url = sync.format_artwork_url(art_obj, 512, 512)
         self.assertEqual(formatted_url, "https://example.com/art/512x512bb.jpg")
 
-        path = sync.get_artwork_cache_path(formatted_url, self.tmp_dir)
+        path = sync.artwork_cache_path(formatted_url, self.tmp_dir)
         self.assertTrue(path.endswith(".jpg"))
         self.assertTrue(path.startswith(os.path.join(self.tmp_dir, "art")))
 

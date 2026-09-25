@@ -135,7 +135,6 @@ class CDPClient:
         self._closed = False
         self._buffer = bytearray()
         self._pending_responses: dict[int, dict[str, Any]] = {}
-        self._events: list[dict[str, Any]] = []
         self._call_lock = threading.Lock()
         self._send_lock = threading.Lock()
 
@@ -171,11 +170,6 @@ class CDPClient:
         except Exception:
             self.close()
             raise
-
-    @property
-    def sock(self) -> socket.socket | None:
-        """Alias for underlying socket to maintain compatibility."""
-        return self._sock
 
     def _perform_handshake(self, netloc: str) -> None:
         """Perform the client-side HTTP Upgrade handshake."""
@@ -363,21 +357,6 @@ class CDPClient:
         full_payload = b"".join(fragments)
         return full_payload.decode("utf-8")
 
-    def send(self, method: str, params: dict[str, Any] | None = None) -> int:
-        """Send a JSON-RPC request and return its request ID."""
-        with self._call_lock:
-            msg_id = self._next_id
-            self._next_id += 1
-
-            payload = json.dumps({
-                "id": msg_id,
-                "method": method,
-                "params": params if params is not None else {},
-            }).encode("utf-8")
-
-            self._send_frame(1, payload)
-            return msg_id
-
     def call(
         self,
         method: str,
@@ -435,11 +414,8 @@ class CDPClient:
                             break
                         else:
                             self._pending_responses[resp_id] = msg
-                    else:
-                        # Event notifications without an 'id'
-                        self._events.append(msg)
-                        if len(self._events) > 500:
-                            del self._events[:-500]
+                    # Event notifications carry no 'id'; nothing here listens
+                    # for any, so they are read past.
             finally:
                 if self._sock and not self._closed:
                     try:
