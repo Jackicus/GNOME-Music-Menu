@@ -1,0 +1,12 @@
+{
+  "uuid": "music-menu@jackt",
+  "name": "Music Menu",
+  "description": "Your Apple Music library as a menu beside Show Apps: albums, artists, playlists and a player, in the overview, a floating panel or on the desktop.",
+  "settings-schema": "org.gnome.shell.extensions.music-menu",
+  "shell-version": [
+    "48",
+    "49",
+    "50"
+  ],
+  "version": 1
+}

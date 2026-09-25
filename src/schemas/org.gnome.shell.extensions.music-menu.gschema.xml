@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="gnome-shell-extensions">
+    <schema path="/org/gnome/shell/extensions/music-menu/" id="org.gnome.shell.extensions.music-menu">
+
+        <!-- Media sections. Each looks in an ordered list of folders,
+             <prefix>-folders. There is no default: the Videos folder cannot
+             serve both TV shows and films, so a section stays off until
+             pointed at one. <prefix>-path is the single folder earlier
+             releases kept: the preferences move it into the list the first
+             time they open, and the scanner reads it only while the list is
+             still empty. -->
+        <key name="tv-shows-enabled" type="b">
+            <default>true</default>
+            <summary>Show TV shows</summary>
+        </key>
+        <key name="tv-shows-path" type="s">
+            <default>""</default>
+            <summary>TV shows folder (legacy)</summary>
+            <description>Superseded by tv-shows-folders; read only while that list is empty. One subfolder per show, optionally split into Season N subfolders.</description>
+        </key>
+        <key name="tv-shows-folders" type="as">
+            <default>[]</default>
+            <summary>TV shows folders</summary>
+            <description>One subfolder per show, optionally split into Season N subfolders. Tried in order; a show that appears in two folders is listed twice.</description>
+        </key>
+
+        <key name="tv-shows-sources" type="as">
+            <default>['tvmaze','tmdb@1','wikipedia']</default>
+            <summary>TV show sources, in order</summary>
+            <description>Tried in order until one answers. An entry is a provider, optionally with a credential slot ("tmdb@2"); a slot with no credential is skipped.</description>
+        </key>
+        <key name="tv-shows-online" type="b">
+            <default>true</default>
+            <summary>Fetch artwork and descriptions online for TV shows</summary>
+            <description>Off leaves this section with whatever is already cached. Every section has its own; there is no longer a global switch.</description>
+        </key>
+        <key name="tv-shows-open-command" type="s">
+            <default>"vlc --fullscreen --play-and-exit --qt-continue=0"</default>
+            <summary>TV show player command</summary>
+            <description>Command this section's files open with; the file's path is appended. The default plays in VLC full screen and closes it when the file ends, with VLC's own "continue playback" off, since resume-playback does that. Empty uses the system default application, and so does a command that is not installed.</description>
+        </key>
+
+        <key name="films-enabled" type="b">
+            <default>true</default>
+            <summary>Show films</summary>
+        </key>
+        <key name="films-path" type="s">
+            <default>""</default>
+            <summary>Films folder (legacy)</summary>
+            <description>Superseded by films-folders; read only while that list is empty. One subfolder or file per film, named "Title (Year)".</description>
+        </key>
+        <key name="films-folders" type="as">
+            <default>[]</default>
+            <summary>Films folders</summary>
+            <description>One subfolder or file per film, named "Title (Year)".</description>
+        </key>
+
+        <key name="films-sources" type="as">
+            <default>['tmdb@1','wikipedia']</default>
+            <summary>Film sources, in order</summary>
+            <description>Tried in order until one answers. TMDB with no key set is skipped, which leaves Wikipedia.</description>
+        </key>
+        <key name="films-online" type="b">
+            <default>true</default>
+            <summary>Fetch artwork and descriptions online for films</summary>
+            <description>Off leaves this section with whatever is already cached. Every section has its own; there is no longer a global switch.</description>
+        </key>
+        <key name="films-open-command" type="s">
+            <default>"vlc --fullscreen --play-and-exit --qt-continue=0"</default>
+            <summary>Film player command</summary>
+            <description>Command this section's files open with; the file's path is appended. The default plays in VLC full screen and closes it when the file ends, with VLC's own "continue playback" off, since resume-playback does that. Empty uses the system default application, and so does a command that is not installed.</description>
+        </key>
+
+        <!-- Credentials, shared by every section that names a slot.
+             A slot id is "<service>@<n>": the same slot on two pages is the
+             same key, so the TMDB key TV shows use is the one films use, and a
+             second slot ("tmdb@2") is a second key to fall back to.
+             Stored in plain text in dconf, like every other GSettings value. -->
+        <key name="credentials" type="a{ss}">
+            <default>{}</default>
+            <summary>API credentials by slot</summary>
+            <description>Slot id ("tmdb@1", "tmdb@2") to credential. An empty or missing credential makes the sources that name it skip themselves.</description>
+        </key>
+
+        <!-- Where each thing opens. Two independent choices out of one
+             vocabulary: the same four words mean the same four places on
+             both. Neither reads the other. -->
+        <key name="library-opens-in" type="s">
+            <choices>
+                <choice value="desktop"/>
+                <choice value="workspaces"/>
+                <choice value="menu"/>
+                <choice value="modal"/>
+            </choices>
+            <default>"menu"</default>
+            <summary>Where the library opens</summary>
+            <description>Where the library — a tab per section over its grid — is drawn. Whichever it is, the button next to Show Apps opens it and closes it again. "desktop" draws it on the wallpaper of the workspace the button is pressed on; "workspaces" draws it on the wallpaper of a workspace of its own and slides to it, giving that workspace up when it is closed. "menu" puts it in the overview, beside the applications. "modal" pops it up in the folder's panel over the desktop, closed with Escape, a click away, or the button again. Only one is ever built. Where a picked item opens is detail-opens-in, which is read independently of this.</description>
+        </key>
+        <key name="detail-opens-in" type="s">
+            <choices>
+                <choice value="desktop"/>
+                <choice value="workspaces"/>
+                <choice value="menu"/>
+                <choice value="modal"/>
+            </choices>
+            <default>"menu"</default>
+            <summary>Where a picked item opens</summary>
+            <description>Where the detail pane of a picked item is drawn. "desktop" puts it on the wallpaper of the workspace the pick was made on — in place of the grid, when the library is drawn there too. "workspaces" puts it on a workspace of its own and slides to it. "menu" pops it up the way the shell opens an app folder, zooming out of the tile, over whatever the pick was made on, and it goes when that tile does. "modal" is the same panel hosted over the desktop always, outliving the overview and a change of workspace until Escape or a click away closes it.</description>
+        </key>
+
+        <!-- The library's keyboard shortcut, grabbed by the shell the way its
+             own are (Main.wm.addKeybinding), so the same accelerator strings
+             GNOME's keybinding settings hold. Empty by default: nothing of the
+             system's is taken until one is set. -->
+        <key name="library-shortcut" type="as">
+            <default>[]</default>
+            <summary>Open the library</summary>
+            <description>Opens the library wherever library-opens-in puts it, as the button next to Show Apps does, and closes it again when it is what is up. Empty is no shortcut.</description>
+        </key>
+
+        <!-- Remotes, controllers and keys of the user's own (lib/actions.js,
+             lib/controls.js). keys-<action> are (keyval, modifiers) pairs,
+             numbers because the shell cannot read a key's name, and apply only
+             while a library has the keyboard; the arrows, Enter and Escape
+             always work besides. The defaults are a media remote's: OK and
+             Select (0x10081160, 0x1008ffa0), Back and Exit (0x1008ff26,
+             0x100810ae), Home page (0x1008ff18), Page Up/Down and Channel
+             Down/Up. pad-<action> are controller inputs as libmanette reports
+             them, "button:<code>" or "axis:<code>" and a direction; the
+             defaults are a mapped pad's D-pad, left stick, A, B, Menu, the
+             bumpers and Y. -->
+        <key name="keys-up" type="a(uu)">
+            <default>@a(uu) []</default>
+            <summary>Keys for up</summary>
+        </key>
+        <key name="keys-down" type="a(uu)">
+            <default>@a(uu) []</default>
+            <summary>Keys for down</summary>
+        </key>
+        <key name="keys-left" type="a(uu)">
+            <default>@a(uu) []</default>
+            <summary>Keys for left</summary>
+        </key>
+        <key name="keys-right" type="a(uu)">
+            <default>@a(uu) []</default>
+            <summary>Keys for right</summary>
+        </key>
+        <key name="keys-select" type="a(uu)">
+            <default>[(268964192, 0), (269025184, 0)]</default>
+            <summary>Keys for select</summary>
+        </key>
+        <key name="keys-back" type="a(uu)">
+            <default>[(269025062, 0), (268964014, 0)]</default>
+            <summary>Keys for back</summary>
+        </key>
+        <key name="keys-home" type="a(uu)">
+            <default>[(269025048, 0)]</default>
+            <summary>Keys for home</summary>
+        </key>
+        <key name="keys-page-previous" type="a(uu)">
+            <default>[(65365, 0), (268964243, 0)]</default>
+            <summary>Keys for previous page</summary>
+        </key>
+        <key name="keys-page-next" type="a(uu)">
+            <default>[(65366, 0), (268964242, 0)]</default>
+            <summary>Keys for next page</summary>
+        </key>
+        <key name="keys-watched" type="a(uu)">
+            <default>@a(uu) []</default>
+            <summary>Keys for mark watched</summary>
+        </key>
+        <key name="pad-up" type="as">
+            <default>['button:544','axis:1-','axis:17-']</default>
+            <summary>Controller inputs for up</summary>
+        </key>
+        <key name="pad-down" type="as">
+            <default>['button:545','axis:1+','axis:17+']</default>
+            <summary>Controller inputs for down</summary>
+        </key>
+        <key name="pad-left" type="as">
+            <default>['button:546','axis:0-','axis:16-']</default>
+            <summary>Controller inputs for left</summary>
+        </key>
+        <key name="pad-right" type="as">
+            <default>['button:547','axis:0+','axis:16+']</default>
+            <summary>Controller inputs for right</summary>
+        </key>
+        <key name="pad-select" type="as">
+            <default>['button:304']</default>
+            <summary>Controller inputs for select</summary>
+        </key>
+        <key name="pad-back" type="as">
+            <default>['button:305']</default>
+            <summary>Controller inputs for back</summary>
+        </key>
+        <key name="pad-home" type="as">
+            <default>['button:315']</default>
+            <summary>Controller inputs for home</summary>
+        </key>
+        <key name="pad-page-previous" type="as">
+            <default>['button:310']</default>
+            <summary>Controller inputs for previous page</summary>
+        </key>
+        <key name="pad-page-next" type="as">
+            <default>['button:311']</default>
+            <summary>Controller inputs for next page</summary>
+        </key>
+        <key name="pad-watched" type="as">
+            <default>['button:307']</default>
+            <summary>Controller inputs for mark watched</summary>
+        </key>
+        <key name="gamepad-enabled" type="b">
+            <default>true</default>
+            <summary>Read game controllers</summary>
+            <description>Navigate a library with a game controller, through libmanette. Only acted on while a library is on screen, except Home, which opens it when no window has the keyboard.</description>
+        </key>
+
+        <!-- Appearance: one set of style settings, shared by all three views -->
+        <key name="columns" type="i">
+            <range min="4" max="10"/>
+            <default>6</default>
+            <summary>Columns</summary>
+            <description>Covers per row. Fewer means larger covers. The count is capped by what fits the space the grid is drawn in — the overview's grid slot is the smallest — so a narrow space shows fewer.</description>
+        </key>
+        <key name="rows" type="i">
+            <range min="1" max="3"/>
+            <default>2</default>
+            <summary>Rows</summary>
+            <description>Rows per page. Fewer means larger covers. The count is capped by what fits the space the grid is drawn in — the overview's grid slot is the smallest — so a narrow space shows fewer.</description>
+        </key>
+        <key name="grid-align" type="s">
+            <choices>
+                <choice value="center"/>
+                <choice value="start"/>
+            </choices>
+            <default>"center"</default>
+            <summary>Grid alignment</summary>
+            <description>Where the covers sit when a row is not full: "center" centres a part-full row under the full ones, as the app grid does; "start" lines it up against the leading edge. Full rows are centred on the page either way.</description>
+        </key>
+        <key name="corner-radius" type="i">
+            <range min="0" max="40"/>
+            <default>18</default>
+            <summary>Corner radius</summary>
+            <description>How rounded artwork, tiles and the detail pane are, in pixels. 0 is square. The related radii (hero, thumbnails, rows, pane) scale with it.</description>
+        </key>
+        <key name="detail-size" type="i">
+            <range min="80" max="120"/>
+            <default>100</default>
+            <summary>Detail pop-up size</summary>
+            <description>How much of the room available the pop-up detail panel fills, as a percentage. Used when items open in a pop-up (detail-opens-in "menu" or "modal").</description>
+        </key>
+
+        <key name="play-on-new-workspace" type="b">
+            <default>true</default>
+            <summary>Play on a new workspace</summary>
+            <description>When on, playing something — an episode or a film — first moves to an empty workspace, so the player's window opens there and the one it was picked on is left as it was. Folders ("Show in Files") open where you are either way.</description>
+        </key>
+
+        <!-- What has been watched: lib/tracking.js. -->
+        <key name="tracking" type="s">
+            <choices>
+                <choice value="source"/>
+                <choice value="local"/>
+                <choice value="none"/>
+            </choices>
+            <default>"source"</default>
+            <summary>Where watched marks are kept</summary>
+            <description>"local" keeps every mark in ~/.local/share/music-menu/watched.json. "source" keeps that file and also copies each library folder's marks into a .music-menu-watched.json at the top of that folder, so another machine reading the same folder sees them; switching back to "local" removes those copies. "none" turns tracking off and leaves both files as they are.</description>
+        </key>
+        <!-- Playing is watched through MPRIS: lib/playback.js. -->
+        <key name="watched-threshold" type="i">
+            <range min="50" max="100"/>
+            <default>90</default>
+            <summary>Watched after</summary>
+            <description>How far through an episode or film, as a percentage of its length, playback has to get before it is marked watched. Read from any player that speaks MPRIS (VLC, mpv with mpv-mpris, Showtime, Celluloid), however the file was opened.</description>
+        </key>
+        <key name="resume-playback" type="b">
+            <default>true</default>
+            <summary>Continue where you left off</summary>
+            <description>When on, where playback stopped is kept with the watched marks, and playing the file from the library again picks up from there, less resume-rewind. Something marked watched starts from the beginning.</description>
+        </key>
+        <key name="resume-rewind" type="i">
+            <range min="0" max="60"/>
+            <default>20</default>
+            <summary>Rewind on resume</summary>
+            <description>How many seconds before where it stopped playback picks up again, so the moment it was left at is seen again.</description>
+        </key>
+
+        <!-- The one player command earlier releases kept for videos. The
+             preferences and the extension move it into tv-shows-open-command
+             and films-open-command the first time either runs, and nothing
+             reads it after that. -->
+        <key name="player-command" type="s">
+            <default>""</default>
+            <summary>Video player command (legacy)</summary>
+            <description>Superseded by the per-section open commands; kept only so an upgrade carries the value over.</description>
+        </key>
+    </schema>
+</schemalist>

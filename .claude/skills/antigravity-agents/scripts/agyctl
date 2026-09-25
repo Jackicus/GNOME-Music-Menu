@@ -1,0 +1,843 @@
+#!/usr/bin/env python3
+"""agyctl - launch, track, and monitor Antigravity CLI (agy) sub-agent jobs.
+
+Every job runs `agy -p ... --output-format stream-json` detached, with stdin
+closed, in its own directory under $AGY_RUNS (default ~/.local/state/agy-runs):
+
+    <job>/meta.json       launch parameters, pid, worktree/branch
+    <job>/prompt.md       the brief the job was given
+    <job>/events.ndjson   live stream-json events (init has the conversation id)
+    <job>/stderr.log      stderr, including AGY_ERROR lines
+    <job>/exit_code       written when the process exits
+
+Subcommands: launch, status, log, result, usage, watch, stop, clean, models.
+Run `agyctl <cmd> -h` for options.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+RUNS = Path(os.environ.get("AGY_RUNS", Path.home() / ".local/state/agy-runs"))
+FALLBACK_MODEL = "gemini-3.8-flash-high"
+MODEL_CACHE_TTL = 6 * 3600
+USAGE_CACHE_TTL = 45
+TERMINAL = {"done", "failed", "dead", "stopped"}
+
+
+# ---------------------------------------------------------------- helpers
+
+def agy_bin():
+    env = os.environ.get("AGY_BIN")
+    if env:
+        return env
+    # Resolve the real binary: interactive shells may wrap `agy` in a function.
+    found = shutil.which("agy")
+    if found:
+        return found
+    local = Path.home() / ".local/bin/agy"
+    if local.exists():
+        return str(local)
+    sys.exit("agyctl: agy binary not found (set AGY_BIN)")
+
+
+def now():
+    return time.time()
+
+
+def fmt_dur(sec):
+    if sec is None:
+        return "-"
+    sec = int(sec)
+    if sec < 60:
+        return f"{sec}s"
+    if sec < 3600:
+        return f"{sec // 60}m{sec % 60:02d}s"
+    return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
+def fmt_tok(n):
+    if not n:
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n / 1000:.0f}k"
+    return str(n)
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return default
+
+
+def write_json(path, data):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # Zombies count as dead.
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1][0]
+        return state != "Z"
+    except Exception:
+        return True
+
+
+def job_dir(name):
+    return RUNS / name
+
+
+def all_jobs():
+    if not RUNS.exists():
+        return []
+    return sorted(
+        (p.name for p in RUNS.iterdir() if p.is_dir() and (p / "meta.json").exists()),
+        key=lambda n: read_json(RUNS / n / "meta.json", {}).get("started_at", 0),
+    )
+
+
+# ---------------------------------------------------------------- models
+
+def list_models(refresh=False):
+    cache = RUNS / ".models-cache.json"
+    data = read_json(cache)
+    if data and not refresh and now() - data.get("t", 0) < MODEL_CACHE_TTL:
+        return data["models"]
+    try:
+        out = subprocess.run(
+            [agy_bin(), "models"], stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=60,
+        ).stdout
+    except Exception:
+        return data["models"] if data else []
+    models = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and re.match(r"^[a-z0-9][a-z0-9.\-]+$", parts[0].strip()):
+            models.append({"id": parts[0].strip(), "name": parts[1].strip()})
+    if models:
+        RUNS.mkdir(parents=True, exist_ok=True)
+        write_json(cache, {"t": now(), "models": models})
+    return models
+
+
+def latest_flash(tier="high"):
+    best, best_ver = None, ()
+    for m in list_models():
+        mm = re.match(r"^gemini-(\d+(?:\.\d+)*)-flash-(\w+)$", m["id"])
+        if mm and mm.group(2) == tier:
+            ver = tuple(int(x) for x in mm.group(1).split("."))
+            if ver > best_ver:
+                best, best_ver = m["id"], ver
+    return best or FALLBACK_MODEL.replace("-high", f"-{tier}")
+
+
+def resolve_model(spec):
+    spec = spec or os.environ.get("AGY_MODEL") or "flash"
+    aliases = {"flash": "high", "flash-high": "high", "flash-medium": "medium", "flash-low": "low"}
+    if spec in aliases:
+        return latest_flash(aliases[spec])
+    return spec
+
+
+# ---------------------------------------------------------------- job state
+
+def parse_events(path, root=None):
+    """Summarize a job's stream-json event log."""
+    info = {
+        "conversation_id": None, "model": None, "steps": 0, "tools": 0,
+        "tokens": 0, "step_tokens": 0, "result": None, "last": None,
+        "last_tool": None, "text": [], "errors": [],
+    }
+    try:
+        fh = open(path, errors="replace")
+    except FileNotFoundError:
+        return info
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = ev.get("event")
+            if kind == "init":
+                info["conversation_id"] = ev.get("conversation_id")
+                info["model"] = (ev.get("init") or {}).get("model")
+            elif kind == "step_update":
+                su = ev.get("step_update") or {}
+                info["conversation_id"] = info["conversation_id"] or su.get("conversation_id")
+                st, stype = su.get("state"), su.get("step_type")
+                if stype == "tool":
+                    ti = su.get("tool_info") or {}
+                    desc = describe_tool(su.get("tool_name") or ti.get("name"), ti.get("parameters") or {}, root)
+                    info["last"] = ("tool", desc, st)
+                    if st == "DONE":
+                        info["tools"] += 1
+                        info["last_tool"] = desc
+                    elif st in ("ERROR", "FAILED", "CANCELED"):
+                        info["errors"].append(f"tool {desc}: {st}")
+                elif stype == "agent_response":
+                    if su.get("text_delta"):
+                        info["text"].append(su["text_delta"])
+                    info["last"] = ("responding", None, st)
+                if st == "DONE":
+                    info["steps"] += 1
+                    info["step_tokens"] += ((su.get("usage") or {}).get("total_tokens") or 0)
+            elif kind == "result":
+                info["result"] = ev.get("result") or {}
+            elif kind == "error":
+                info["errors"].append(json.dumps(ev)[:300])
+    res = info["result"]
+    info["tokens"] = ((res or {}).get("usage") or {}).get("total_tokens") or info["step_tokens"]
+    return info
+
+
+def shorten(text, root):
+    """Make paths under the job's working directory relative."""
+    text = str(text)
+    if root:
+        root = str(root).rstrip("/")
+        text = text.replace(f"file://{root}/", "").replace(f"{root}/", "").replace(root, ".")
+    return text
+
+
+def describe_tool(name, params, root=None):
+    name = name or "tool"
+    for key in ("CommandLine", "TargetFile", "AbsolutePath", "Path", "File", "Query", "Url", "SearchPath"):
+        if key in params:
+            val = shorten(str(params[key]).strip('"').replace("\n", " "), root)
+            return f"{name}: {val[:70]}"
+    return name
+
+
+def agy_errors(d):
+    try:
+        return [l.strip() for l in (d / "stderr.log").read_text(errors="replace").splitlines()
+                if "AGY_ERROR" in l or "no output produced" in l or l.lower().startswith("error:")]
+    except FileNotFoundError:
+        return []
+
+
+def job_state(name, stall_min=None):
+    d = job_dir(name)
+    meta = read_json(d / "meta.json", {})
+    ev = parse_events(d / "events.ndjson", meta.get("cwd"))
+    stall_min = stall_min if stall_min is not None else float(os.environ.get("AGY_STALL_MIN", 10))
+    exit_code = None
+    if (d / "exit_code").exists():
+        exit_code = (d / "exit_code").read_text().strip()
+    try:
+        last_activity = max((d / f).stat().st_mtime for f in ("events.ndjson", "stderr.log") if (d / f).exists())
+    except ValueError:
+        last_activity = meta.get("started_at")
+    idle = now() - last_activity if last_activity else None
+    res = ev["result"]
+    errs = agy_errors(d)
+    if (res or {}).get("error") and not errs:
+        errs = [f"error: {res['error'].splitlines()[0]}"]
+
+    if (d / "stopped").exists():
+        state = "stopped"
+    elif exit_code is not None:
+        ok = exit_code == "0" and (res or {}).get("status", "SUCCESS") == "SUCCESS" and not any("no output produced" in e for e in errs)
+        state = "done" if ok else "failed"
+    elif pid_alive(meta.get("pid")):
+        state = "stalled" if idle is not None and idle > stall_min * 60 else "running"
+    else:
+        state = "dead"
+
+    end = (d / "exit_code").stat().st_mtime if exit_code is not None else (last_activity if state in TERMINAL else now())
+    last = ev["last"]
+    if state in ("running", "stalled") and last:
+        activity = last[1] if last[0] == "tool" else "responding"
+        if last[0] == "tool" and last[2] == "ACTIVE":
+            activity = "running " + activity
+    else:
+        activity = ev["last_tool"] or "-"
+    return {
+        "name": name, "state": state, "exit_code": exit_code,
+        "conversation_id": ev["conversation_id"] or meta.get("conversation_id"),
+        "model": ev["model"] or meta.get("model"), "cwd": meta.get("cwd"),
+        "branch": meta.get("branch"), "worktree": meta.get("worktree"),
+        "resume_of": meta.get("resume_of"),
+        "started_at": meta.get("started_at"), "elapsed": end - meta.get("started_at", end),
+        "idle": idle, "steps": ev["steps"], "tools": ev["tools"], "tokens": ev["tokens"],
+        "activity": activity, "status": (res or {}).get("status"),
+        "agy_errors": errs, "event_errors": ev["errors"][-3:],
+    }
+
+
+# ---------------------------------------------------------------- usage
+
+def fetch_usage(refresh=False):
+    cache = RUNS / ".usage-cache.json"
+    data = read_json(cache)
+    if data and not refresh and now() - data.get("t", 0) < USAGE_CACHE_TTL:
+        return data["usage"]
+    try:
+        p = subprocess.run(
+            [agy_bin(), "-p", "/usage", "--output-format", "json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90,
+        )
+        raw = json.loads(p.stdout[p.stdout.index("{"):])
+    except Exception as e:
+        return {"error": f"could not read /usage: {e}"}
+    groups = []
+    for g in ((raw.get("command") or {}).get("data") or {}).get("groups", []):
+        for b in g.get("buckets", []):
+            groups.append({
+                "group": g.get("name"), "window": b.get("window"), "bucket": b.get("name"),
+                "remaining": b.get("remaining_fraction"), "reset_time": b.get("reset_time"),
+            })
+    usage = {"buckets": groups}
+    RUNS.mkdir(parents=True, exist_ok=True)
+    write_json(cache, {"t": now(), "usage": usage})
+    return usage
+
+
+def usage_level(usage, warn, crit, group="Gemini"):
+    """Return ('ok'|'warn'|'crit'|'unknown', lowest bucket) for the model group in use."""
+    buckets = [b for b in usage.get("buckets", []) if group.lower() in (b["group"] or "").lower()]
+    if not buckets:
+        return "unknown", None
+    low = min(buckets, key=lambda b: b["remaining"] if b["remaining"] is not None else 1)
+    r = low["remaining"] if low["remaining"] is not None else 1
+    return ("crit" if r < crit else "warn" if r < warn else "ok"), low
+
+
+def until(ts):
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return fmt_dur((t - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return "?"
+
+
+def local_token_totals(window_sec):
+    total, recent = 0, 0
+    cutoff = now() - window_sec
+    for n in all_jobs():
+        s = job_state(n)
+        total += s["tokens"] or 0
+        if (s["started_at"] or 0) >= cutoff or s["state"] in ("running", "stalled"):
+            recent += s["tokens"] or 0
+    return total, recent
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_launch(a):
+    name = a.name
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", name):
+        sys.exit("agyctl: job name must be [A-Za-z0-9._-]")
+    d = job_dir(name)
+    if d.exists():
+        sys.exit(f"agyctl: job '{name}' already exists ({d}); pick a new name or `agyctl clean {name}`")
+
+    if a.prompt_file:
+        prompt = Path(a.prompt_file).read_text()
+    elif a.prompt:
+        prompt = a.prompt
+    elif not sys.stdin.isatty():
+        prompt = sys.stdin.read()
+    else:
+        sys.exit("agyctl: give the brief via stdin (heredoc), --prompt or --prompt-file")
+    if not prompt.strip():
+        sys.exit("agyctl: empty prompt")
+
+    cwd = Path(a.dir).resolve() if a.dir else Path.cwd()
+    conversation = None
+    parent = None
+    if a.resume:
+        parent = job_state(a.resume)
+        conversation = parent["conversation_id"]
+        if not conversation:
+            sys.exit(f"agyctl: job '{a.resume}' has no conversation id yet")
+        if parent["state"] in ("running", "stalled"):
+            sys.exit(f"agyctl: job '{a.resume}' is still {parent['state']}; wait or stop it first")
+        if not a.dir:
+            cwd = Path(parent["cwd"])
+
+    d.mkdir(parents=True)
+    worktree = branch = repo = None
+    if a.worktree is not None:
+        repo = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True).stdout.strip()
+        if not repo:
+            shutil.rmtree(d)
+            sys.exit(f"agyctl: --worktree needs a git repo ({cwd} is not one; `git init` and commit first)")
+        branch = a.worktree or f"agy/{name}"
+        worktree = d / "worktree"
+        base = a.base or "HEAD"
+        p = subprocess.run(["git", "-C", repo, "worktree", "add", "-b", branch, str(worktree), base],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            shutil.rmtree(d)
+            sys.exit(f"agyctl: git worktree add failed:\n{p.stderr}")
+        rel = cwd.relative_to(repo) if cwd != Path(repo) else Path(".")
+        cwd = worktree / rel
+    elif parent:
+        pmeta = read_json(job_dir(a.resume) / "meta.json", {})
+        worktree, branch, repo = pmeta.get("worktree"), pmeta.get("branch"), pmeta.get("repo")
+
+    model = resolve_model(a.model)
+    (d / "prompt.md").write_text(prompt)
+    cmd = [agy_bin(), "-p", prompt, "--output-format", "stream-json", "--model", model]
+    if not a.ask_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    if conversation:
+        cmd += ["--conversation", conversation]
+    if a.timeout:
+        cmd += ["--print-timeout", a.timeout]
+    if a.effort:
+        cmd += ["--effort", a.effort]
+    if a.mode:
+        cmd += ["--mode", a.mode]
+    if a.schema:
+        cmd += ["--json-schema", a.schema]
+    if a.agent:
+        cmd += ["--agent", a.agent]
+    if a.sandbox:
+        cmd.append("--sandbox")
+    for extra in a.add_dir or []:
+        cmd += ["--add-dir", str(Path(extra).resolve())]
+
+    wrapper = '"$@" </dev/null; echo $? > "$AGYCTL_EXIT"'
+    env = dict(os.environ, AGYCTL_EXIT=str(d / "exit_code"), AGYCTL_JOB=name)
+    proc = subprocess.Popen(
+        ["bash", "-c", wrapper, "agyctl-job", *cmd],
+        cwd=str(cwd), stdin=subprocess.DEVNULL,
+        stdout=open(d / "events.ndjson", "wb"), stderr=open(d / "stderr.log", "wb"),
+        start_new_session=True, env=env,
+    )
+    meta = {
+        "name": name, "pid": proc.pid, "pgid": proc.pid, "cwd": str(cwd), "model": model,
+        "started_at": now(), "resume_of": a.resume, "conversation_id": conversation,
+        "worktree": str(worktree) if worktree else None, "branch": branch, "repo": repo,
+        "flags": {k: v for k, v in vars(a).items() if k not in ("prompt", "func", "name")},
+    }
+    write_json(d / "meta.json", meta)
+
+    # Wait briefly for the init event so the caller learns the conversation id.
+    conv = None
+    deadline = now() + a.wait_init
+    while now() < deadline:
+        conv = parse_events(d / "events.ndjson")["conversation_id"]
+        if conv or (d / "exit_code").exists():
+            break
+        time.sleep(0.5)
+    if conv and conv != conversation:
+        meta["conversation_id"] = conv
+        write_json(d / "meta.json", meta)
+    print(f"launched {name}")
+    print(f"  pid {proc.pid}  model {model}")
+    print(f"  cwd {cwd}")
+    if branch:
+        print(f"  worktree branch {branch}")
+    print(f"  conversation {conv or conversation or '(pending)'}")
+    print(f"  events {d / 'events.ndjson'}")
+    if (d / "exit_code").exists():
+        s = job_state(name)
+        print(f"  ! exited immediately ({s['state']}): {' | '.join(s['agy_errors'][-2:])}")
+
+
+def status_rows(names, stall_min=None):
+    return [job_state(n, stall_min) for n in names]
+
+
+def print_table(rows):
+    if not rows:
+        print("no jobs")
+        return
+    hdr = f"{'JOB':<22} {'STATE':<8} {'ELAPSED':>8} {'IDLE':>7} {'STEPS':>5} {'TOKENS':>7}  ACTIVITY"
+    print(hdr)
+    for s in rows:
+        idle = fmt_dur(s["idle"]) if s["state"] in ("running", "stalled") else "-"
+        print(f"{s['name'][:22]:<22} {s['state']:<8} {fmt_dur(s['elapsed']):>8} {idle:>7} "
+              f"{s['steps']:>5} {fmt_tok(s['tokens']):>7}  {s['activity'][:60]}")
+        for e in s["agy_errors"][-1:]:
+            print(f"{'':<22}   ! {e[:110]}")
+
+
+def select_jobs(a):
+    names = a.jobs or all_jobs()
+    missing = [n for n in names if not (job_dir(n) / "meta.json").exists()]
+    if missing:
+        sys.exit(f"agyctl: unknown job(s): {', '.join(missing)}")
+    if not a.jobs and not getattr(a, "all", False):
+        cutoff = now() - float(getattr(a, "since_hours", 12)) * 3600
+        names = [n for n in names
+                 if read_json(job_dir(n) / "meta.json", {}).get("started_at", 0) >= cutoff
+                 or not (job_dir(n) / "exit_code").exists()]
+    return names
+
+
+def cmd_status(a):
+    rows = status_rows(select_jobs(a))
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return
+    print_table(rows)
+    if a.verbose:
+        for s in rows:
+            print(f"\n{s['name']}: conversation {s['conversation_id']}  model {s['model']}")
+            print(f"  cwd {s['cwd']}" + (f"  branch {s['branch']}" if s["branch"] else ""))
+
+
+def cmd_log(a):
+    d = job_dir(a.name)
+    root = read_json(d / "meta.json", {}).get("cwd")
+    lines = []
+    text_buf = []
+    try:
+        fh = open(d / "events.ndjson", errors="replace")
+    except FileNotFoundError:
+        sys.exit(f"agyctl: unknown job {a.name}")
+    with fh:
+        for raw in fh:
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            su = ev.get("step_update") or {}
+            if ev.get("event") == "init":
+                lines.append(f"init conversation={ev.get('conversation_id')} model={(ev.get('init') or {}).get('model')}")
+            elif su.get("step_type") == "tool" and su.get("state") != "ACTIVE":
+                ti = su.get("tool_info") or {}
+                line = f"[{su.get('step_index')}] {su.get('state')} {describe_tool(su.get('tool_name'), ti.get('parameters') or {}, root)}"
+                if a.outputs and ti.get("output"):
+                    out = str(ti["output"]).strip().replace("\r", "")
+                    line += "\n      " + out[-a.outputs:].replace("\n", "\n      ")
+                lines.append(line)
+            elif su.get("step_type") == "agent_response":
+                if su.get("text_delta"):
+                    text_buf.append(su["text_delta"])
+                if su.get("state") == "DONE" and text_buf:
+                    txt = shorten("".join(text_buf).strip().replace("\n", " "), root)
+                    text_buf = []
+                    if txt:
+                        lines.append(f"[{su.get('step_index')}] said: {txt[:220]}")
+            elif ev.get("event") == "result":
+                r = ev.get("result") or {}
+                lines.append(f"result status={r.get('status')} turns={r.get('num_turns')} "
+                             f"tokens={(r.get('usage') or {}).get('total_tokens')} dur={fmt_dur(r.get('duration_seconds'))}")
+    for l in lines[-a.n:]:
+        print(l)
+    for e in agy_errors(d):
+        print(f"! {e}")
+
+
+def cmd_result(a):
+    d = job_dir(a.name)
+    s = job_state(a.name)
+    ev = parse_events(d / "events.ndjson")
+    res = ev["result"] or {}
+    print(f"# {a.name}: {s['state']} (exit {s['exit_code']}, status {s['status']}, "
+          f"{fmt_tok(s['tokens'])} tokens, {fmt_dur(s['elapsed'])})")
+    if s["branch"]:
+        print(f"# branch {s['branch']} in {s['worktree']}")
+    print(f"# conversation {s['conversation_id']}\n")
+    text = shorten(res.get("response") or "".join(ev["text"]), s["cwd"])
+    print(text.strip() or "(no response text)")
+    for e in s["agy_errors"]:
+        print(f"\n! {e}")
+
+
+def cmd_usage(a):
+    usage = fetch_usage(refresh=a.refresh)
+    if "error" in usage:
+        print(usage["error"])
+        sys.exit(2)
+    level, low = usage_level(usage, a.warn, a.crit)
+    total, recent = local_token_totals(5 * 3600)
+    if a.json:
+        print(json.dumps({"level": level, "lowest": low, "usage": usage,
+                          "agyctl_tokens_total": total, "agyctl_tokens_5h": recent}, indent=2))
+    else:
+        for b in usage["buckets"]:
+            pct = f"{b['remaining'] * 100:.0f}%" if b["remaining"] is not None else "?"
+            print(f"{b['group']:<24} {b['window']:<7} {pct:>5} left  resets in {until(b['reset_time'])}")
+        running = sum(1 for n in all_jobs() if job_state(n)["state"] in ("running", "stalled"))
+        print(f"agyctl jobs: {running} running, {fmt_tok(recent)} tokens in last 5h, {fmt_tok(total)} all-time")
+        if low:
+            print(f"level: {level.upper()} (lowest Gemini bucket {low['window']} "
+                  f"{(low['remaining'] or 0) * 100:.0f}%, resets in {until(low['reset_time'])})")
+    sys.exit({"ok": 0, "unknown": 0, "warn": 10, "crit": 11}[level])
+
+
+def cmd_watch(a):
+    """Block until something actionable happens, then report it.
+
+    Each --key keeps its own record of what it has already reported, so a job
+    that finishes between two watch calls is still reported exactly once.
+    """
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", a.key)
+    state_file = RUNS / f".watch-{key}.json"
+    fresh = not state_file.exists()
+    seen = read_json(state_file, {})
+    usage_seen = seen.pop("__usage__", "ok")
+    start = now()
+    last_usage_check = 0
+    level, low = "unknown", None
+
+    def candidates():
+        if a.jobs:
+            return a.jobs
+        cutoff = now() - 24 * 3600
+        return [n for n in all_jobs()
+                if not (job_dir(n) / "exit_code").exists()
+                or read_json(job_dir(n) / "meta.json", {}).get("started_at", 0) >= cutoff]
+
+    if fresh:
+        # First run for this key: adopt current states silently, report only changes from here on.
+        for s in status_rows(candidates(), a.stall):
+            seen[s["name"]] = {"state": s["state"], "errs": len(s["agy_errors"])}
+
+    while True:
+        rows = status_rows(candidates(), a.stall)
+        events = []
+        for s in rows:
+            prev = seen.get(s["name"])
+            if prev is None:
+                # Job appeared since the last call. Only report it if it already ended.
+                prev = {"state": "running", "errs": 0}
+                if s["state"] not in TERMINAL:
+                    seen[s["name"]] = {"state": s["state"], "errs": 0}
+            if s["state"] != prev["state"] and (s["state"] in TERMINAL or s["state"] == "stalled"):
+                events.append(f"{s['state'].upper():<8} {s['name']} "
+                              f"({fmt_tok(s['tokens'])} tokens, {fmt_dur(s['elapsed'])})")
+            elif s["state"] == "running" and prev["state"] == "stalled":
+                events.append(f"RESUMED  {s['name']} (output flowing again)")
+            for e in s["agy_errors"][prev["errs"]:]:
+                events.append(f"AGY_ERROR {s['name']}: {e[:200]}")
+        if now() - last_usage_check >= a.usage_every:
+            last_usage_check = now()
+            usage = fetch_usage()
+            if "error" not in usage:
+                level, low = usage_level(usage, a.warn, a.crit)
+                if level in ("warn", "crit") and level != usage_seen:
+                    events.append(f"QUOTA_{level.upper()} Gemini {low['window']} at "
+                                  f"{(low['remaining'] or 0) * 100:.0f}%, resets in {until(low['reset_time'])}")
+                if level != "unknown":
+                    usage_seen = level
+
+        active = [s for s in rows if s["state"] in ("running", "stalled")]
+        timed_out = now() - start >= a.max
+        if events or not active or timed_out:
+            for s in rows:
+                seen[s["name"]] = {"state": s["state"], "errs": len(s["agy_errors"])}
+            write_json(state_file, {**seen, "__usage__": usage_seen})
+            if events:
+                print("EVENTS")
+                for e in events:
+                    print(f"  {e}")
+            elif not active:
+                print("IDLE no running jobs")
+            else:
+                print(f"HEARTBEAT nothing changed in {fmt_dur(now() - start)}")
+            print()
+            print_table(rows)
+            if low:
+                print(f"\nquota: {level.upper()} (lowest Gemini {low['window']} "
+                      f"{(low['remaining'] or 0) * 100:.0f}%, resets in {until(low['reset_time'])})")
+            return
+        time.sleep(a.interval)
+
+
+def process_tree(root):
+    """PIDs of root and all its descendants (agy starts tool commands in new sessions,
+    so killing the process group alone would orphan them)."""
+    children = {}
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            ppid = int((p / "stat").read_text().rsplit(") ", 1)[1].split()[1])
+        except Exception:
+            continue
+        children.setdefault(ppid, []).append(int(p.name))
+    out, stack = [], [root]
+    while stack:
+        pid = stack.pop()
+        out.append(pid)
+        stack.extend(children.get(pid, []))
+    return out
+
+
+def kill_tree(root):
+    pids = process_tree(root)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in reversed(pids):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = now() + 5
+        while now() < deadline and any(pid_alive(p) for p in pids):
+            time.sleep(0.2)
+        if not any(pid_alive(p) for p in pids):
+            break
+
+
+def cmd_stop(a):
+    names = all_jobs() if a.all else a.jobs
+    for n in names:
+        s = job_state(n)
+        if s["state"] not in ("running", "stalled"):
+            if not a.all:
+                print(f"{n}: already {s['state']}")
+            continue
+        meta = read_json(job_dir(n) / "meta.json", {})
+        (job_dir(n) / "stopped").write_text(str(now()))
+        kill_tree(meta["pid"])
+        print(f"{n}: stopped (resume later with `agyctl launch <new> --resume {n}`)")
+
+
+def cmd_clean(a):
+    names = a.jobs
+    if a.finished:
+        names = [n for n in all_jobs() if job_state(n)["state"] in TERMINAL]
+    for n in names:
+        s = job_state(n)
+        if s["state"] in ("running", "stalled"):
+            print(f"{n}: still {s['state']}, skipping (stop it first)")
+            continue
+        meta = read_json(job_dir(n) / "meta.json", {})
+        users = [m for m in all_jobs() if m != n and job_state(m)["state"] in ("running", "stalled")
+                 and read_json(job_dir(m) / "meta.json", {}).get("worktree") == meta.get("worktree")]
+        if meta.get("worktree") and users:
+            print(f"{n}: worktree still in use by {', '.join(users)}, skipping")
+            continue
+        if meta.get("worktree") and Path(meta["worktree"]).exists():
+            args = ["git", "-C", meta["repo"], "worktree", "remove", meta["worktree"]]
+            if a.force:
+                args.insert(-1, "--force")
+            p = subprocess.run(args, capture_output=True, text=True)
+            if p.returncode != 0:
+                print(f"{n}: worktree has changes, not removed (merge it or pass --force): {p.stderr.strip()}")
+                continue
+            if a.delete_branch and meta.get("branch"):
+                subprocess.run(["git", "-C", meta["repo"], "branch", "-D", meta["branch"]], capture_output=True)
+        shutil.rmtree(job_dir(n))
+        print(f"{n}: removed")
+
+
+def cmd_models(a):
+    for m in list_models(refresh=a.refresh):
+        print(f"{m['id']:<32} {m['name']}")
+    print(f"\ndefault (flash) -> {resolve_model('flash')}")
+
+
+# ---------------------------------------------------------------- cli
+
+def main():
+    ap = argparse.ArgumentParser(prog="agyctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("launch", help="start a detached agy job (brief on stdin)")
+    p.add_argument("name")
+    p.add_argument("-C", "--dir", help="working directory (default: cwd, or the resumed job's)")
+    p.add_argument("--model", help="flash|flash-medium|flash-low or an exact id (default: latest Flash High)")
+    p.add_argument("--worktree", nargs="?", const="", metavar="BRANCH",
+                   help="run in a new git worktree on BRANCH (default agy/<name>)")
+    p.add_argument("--base", help="commit/branch the worktree starts from (default HEAD)")
+    p.add_argument("--resume", metavar="JOB", help="continue JOB's agy conversation with this new brief")
+    p.add_argument("--prompt", help="brief text (otherwise read from stdin)")
+    p.add_argument("--prompt-file")
+    p.add_argument("--timeout", help="agy --print-timeout, e.g. 45m (default: none)")
+    p.add_argument("--effort", choices=["low", "medium", "high", "max"])
+    p.add_argument("--mode", choices=["accept-edits", "plan"])
+    p.add_argument("--schema", help="JSON schema string or file for structured final output")
+    p.add_argument("--agent", help="agy custom agent to run as")
+    p.add_argument("--add-dir", action="append")
+    p.add_argument("--sandbox", action="store_true", help="agy terminal sandbox (does NOT block file writes)")
+    p.add_argument("--ask-permissions", action="store_true",
+                   help="don't pass --dangerously-skip-permissions (tool calls will be auto-denied)")
+    p.add_argument("--wait-init", type=float, default=30, help="seconds to wait for the conversation id")
+    p.set_defaults(func=cmd_launch)
+
+    p = sub.add_parser("status", help="table of jobs")
+    p.add_argument("jobs", nargs="*")
+    p.add_argument("--all", action="store_true", help="include jobs older than --since-hours")
+    p.add_argument("--since-hours", type=float, default=12)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("log", help="readable event feed for a job")
+    p.add_argument("name")
+    p.add_argument("-n", type=int, default=40, help="last N entries")
+    p.add_argument("--outputs", type=int, default=0, metavar="CHARS", help="show last CHARS of each tool output")
+    p.set_defaults(func=cmd_log)
+
+    p = sub.add_parser("result", help="final response of a job")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_result)
+
+    p = sub.add_parser("usage", help="agy quota + agyctl token totals (exit 10 warn, 11 crit)")
+    p.add_argument("--warn", type=float, default=float(os.environ.get("AGY_QUOTA_WARN", 0.25)))
+    p.add_argument("--crit", type=float, default=float(os.environ.get("AGY_QUOTA_CRIT", 0.10)))
+    p.add_argument("--refresh", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_usage)
+
+    p = sub.add_parser("watch", help="block until a job finishes/fails/stalls, errors, or quota drops")
+    p.add_argument("jobs", nargs="*", help="limit to these jobs (default: all active)")
+    p.add_argument("--key", default="default", help="watcher identity; each key reports each event once")
+    p.add_argument("--interval", type=float, default=15)
+    p.add_argument("--max", type=float, default=540, help="return a heartbeat after this many seconds")
+    p.add_argument("--stall", type=float, default=float(os.environ.get("AGY_STALL_MIN", 10)),
+                   help="minutes without output before a running job counts as stalled")
+    p.add_argument("--usage-every", type=float, default=120)
+    p.add_argument("--warn", type=float, default=float(os.environ.get("AGY_QUOTA_WARN", 0.25)))
+    p.add_argument("--crit", type=float, default=float(os.environ.get("AGY_QUOTA_CRIT", 0.10)))
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("stop", help="terminate running jobs")
+    p.add_argument("jobs", nargs="*")
+    p.add_argument("--all", action="store_true")
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("clean", help="remove finished job dirs and their worktrees")
+    p.add_argument("jobs", nargs="*")
+    p.add_argument("--finished", action="store_true", help="all finished/failed/stopped jobs")
+    p.add_argument("--force", action="store_true", help="remove worktrees even with uncommitted changes")
+    p.add_argument("--delete-branch", action="store_true")
+    p.set_defaults(func=cmd_clean)
+
+    p = sub.add_parser("models", help="list agy models and the resolved default")
+    p.add_argument("--refresh", action="store_true")
+    p.set_defaults(func=cmd_models)
+
+    a = ap.parse_args()
+    RUNS.mkdir(parents=True, exist_ok=True)
+    a.func(a)
+
+
+if __name__ == "__main__":
+    main()

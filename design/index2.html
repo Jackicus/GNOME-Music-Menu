@@ -1,0 +1,1710 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apple Music UI — Component Workbench & Blueprint</title>
+  <style>
+    :root {
+      /* Authentic Apple Music Dark Theme Palette */
+      --page-bg: #1f1f1f;
+      --sidebar-bg: #181818;
+      --player-bg: rgba(36, 36, 38, 0.92);
+      --card-bg: rgba(255, 255, 255, 0.05);
+      --card-hover-bg: rgba(255, 255, 255, 0.08);
+      --surface-elevated: #28282a;
+      --surface-border: rgba(255, 255, 255, 0.08);
+      --surface-border-strong: rgba(255, 255, 255, 0.16);
+      
+      --accent: #fa2d48;
+      --accent-hover: #ff4760;
+      --accent-tint: rgba(250, 45, 72, 0.14);
+      --accent-gradient: linear-gradient(135deg, #fa233b 0%, #fb5c74 100%);
+      
+      --text-1: #ffffff;
+      --text-2: rgba(255, 255, 255, 0.70);
+      --text-3: rgba(255, 255, 255, 0.44);
+      --text-4: rgba(255, 255, 255, 0.25);
+      
+      --scrub-track: rgba(255, 255, 255, 0.18);
+      --scrub-fill: #ffffff;
+      
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-xl: 20px;
+      --radius-full: 9999px;
+      
+      --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: "SF Mono", Menlo, Consolas, Monaco, monospace;
+      
+      --shadow-subtle: 0 4px 16px rgba(0, 0, 0, 0.35);
+      --shadow-elevated: 0 16px 40px rgba(0, 0, 0, 0.55);
+      --shadow-artwork: 0 8px 24px rgba(0, 0, 0, 0.45);
+    }
+
+    [data-theme="light"] {
+      --page-bg: #fbfbfd;
+      --sidebar-bg: #f5f5f7;
+      --player-bg: rgba(255, 255, 255, 0.94);
+      --card-bg: rgba(0, 0, 0, 0.035);
+      --card-hover-bg: rgba(0, 0, 0, 0.06);
+      --surface-elevated: #ffffff;
+      --surface-border: rgba(0, 0, 0, 0.08);
+      --surface-border-strong: rgba(0, 0, 0, 0.16);
+      
+      --text-1: #1d1d1f;
+      --text-2: #6e6e73;
+      --text-3: #86868b;
+      --text-4: #c7c7cc;
+      
+      --scrub-track: rgba(0, 0, 0, 0.12);
+      --scrub-fill: #1d1d1f;
+      
+      --shadow-subtle: 0 4px 16px rgba(0, 0, 0, 0.06);
+      --shadow-elevated: 0 16px 40px rgba(0, 0, 0, 0.12);
+      --shadow-artwork: 0 8px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-display);
+      background-color: var(--page-bg);
+      color: var(--text-1);
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow-x: hidden;
+    }
+
+    /* Top Bar */
+    .top-header {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background: var(--sidebar-bg);
+      border-bottom: 1px solid var(--surface-border);
+      padding: 12px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      backdrop-filter: blur(20px);
+    }
+    .top-title-group {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .apple-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent-gradient);
+      color: white;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      box-shadow: 0 2px 8px rgba(250, 45, 72, 0.35);
+    }
+    .top-heading h1 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .top-heading p {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .theme-toggle {
+      background: var(--card-bg);
+      border: 1px solid var(--surface-border);
+      color: var(--text-1);
+      padding: 6px 14px;
+      border-radius: var(--radius-full);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .theme-toggle:hover {
+      background: var(--card-hover-bg);
+    }
+    .quick-jump-select {
+      background: var(--card-bg);
+      border: 1px solid var(--surface-border);
+      color: var(--text-1);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-family: var(--font-display);
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* Workbench Main Layout */
+    .workbench-layout {
+      display: flex;
+      min-height: calc(100vh - 57px);
+    }
+
+    /* Category Nav Rail */
+    .category-nav-rail {
+      width: 250px;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--surface-border);
+      padding: 20px 14px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 57px;
+      height: calc(100vh - 57px);
+      overflow-y: auto;
+    }
+    .nav-group-title {
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-3);
+      padding: 10px 10px 4px 10px;
+    }
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: var(--text-2);
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.12s ease;
+      margin-bottom: 2px;
+    }
+    .nav-link:hover {
+      background: var(--card-hover-bg);
+      color: var(--text-1);
+    }
+    .nav-link.active {
+      background: var(--accent-tint);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .nav-link .tag {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--surface-border);
+      color: var(--text-3);
+    }
+
+    /* Workbench Content Canvas */
+    .workbench-canvas {
+      flex: 1;
+      padding: 36px 48px 100px 48px;
+      max-width: 1200px;
+      margin: 0 auto;
+      overflow-x: hidden;
+    }
+
+    /* Section Block */
+    .component-section {
+      margin-bottom: 60px;
+      scroll-margin-top: 80px;
+    }
+    .section-header-block {
+      border-bottom: 1px solid var(--surface-border);
+      padding-bottom: 14px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+    }
+    .section-header-block h2 {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+    .section-header-block p {
+      font-size: 13px;
+      color: var(--text-3);
+      margin-top: 2px;
+    }
+
+    /* Component Spec Card */
+    .component-card {
+      background: var(--surface-elevated);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 32px;
+      box-shadow: var(--shadow-subtle);
+    }
+    .component-card-bar {
+      padding: 14px 20px;
+      background: rgba(255, 255, 255, 0.015);
+      border-bottom: 1px solid var(--surface-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .component-title-wrap h3 {
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .comp-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      background: var(--card-bg);
+      border: 1px solid var(--surface-border);
+      color: var(--text-2);
+    }
+    .component-card-bar .desc {
+      font-size: 12.5px;
+      color: var(--text-3);
+      margin-top: 2px;
+    }
+    .component-preview-stage {
+      padding: 28px;
+      background: var(--page-bg);
+      position: relative;
+      border-bottom: 1px solid var(--surface-border);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Technical Specification Tabs */
+    .spec-details-row {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      divide-x: 1px solid var(--surface-border);
+    }
+    .spec-pane {
+      padding: 20px 24px;
+    }
+    .spec-pane:first-child {
+      border-right: 1px solid var(--surface-border);
+    }
+    .pane-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-3);
+      margin-bottom: 10px;
+    }
+    .code-snippet {
+      background: #111113;
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #eaeaea;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+    .guideline-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12.5px;
+      color: var(--text-2);
+    }
+    .guideline-list li {
+      display: flex;
+      gap: 8px;
+    }
+    .guideline-list li::before {
+      content: "›";
+      color: var(--accent);
+      font-weight: bold;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    /* ==========================================================================
+       REAL APPLE MUSIC COMPONENT IMPLEMENTATIONS
+       ========================================================================== */
+
+    /* 1. PowerSwoosh Hero Banner Component */
+    .powerswoosh-banner {
+      position: relative;
+      width: 100%;
+      height: 290px;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background-size: cover;
+      background-position: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 30px;
+      box-shadow: var(--shadow-artwork);
+      user-select: none;
+    }
+    .powerswoosh-scrim {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(0,0,0,0.1) 0%, rgba(0,0,0,0.4) 40%, rgba(0,0,0,0.85) 100%);
+      z-index: 1;
+    }
+    .powerswoosh-paddles {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      z-index: 5;
+      display: flex;
+      gap: 8px;
+    }
+    .paddle-icon-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .paddle-icon-btn:hover {
+      background: rgba(0, 0, 0, 0.7);
+    }
+    .powerswoosh-body {
+      position: relative;
+      z-index: 2;
+      max-width: 600px;
+    }
+    .powerswoosh-eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.75);
+      margin-bottom: 4px;
+    }
+    .powerswoosh-title {
+      font-size: 28px;
+      font-weight: 800;
+      color: #fff;
+      line-height: 1.15;
+      margin-bottom: 6px;
+      letter-spacing: -0.4px;
+    }
+    .powerswoosh-desc {
+      font-size: 13.5px;
+      color: rgba(255, 255, 255, 0.85);
+      line-height: 1.4;
+      margin-bottom: 16px;
+    }
+    .powerswoosh-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .action-btn-pill {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 7px 16px;
+      border-radius: var(--radius-full);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.12s, background 0.12s;
+    }
+    .action-btn-pill:hover {
+      background: var(--accent-hover);
+      transform: scale(1.02);
+    }
+    .action-btn-pill.secondary {
+      background: rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(10px);
+    }
+    .action-btn-pill.secondary:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    /* 2. Shelf & Lockup Grid */
+    .shelf-wrapper {
+      width: 100%;
+    }
+    .shelf-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .shelf-title {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .shelf-subtitle {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+    .shelf-link {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .shelf-link:hover {
+      text-decoration: underline;
+    }
+    .lockup-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 20px;
+    }
+
+    /* Standard Product Lockup (Album/Playlist) */
+    .product-card {
+      cursor: pointer;
+      transition: transform 0.18s;
+      user-select: none;
+    }
+    .product-art-box {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: var(--card-bg);
+      box-shadow: var(--shadow-artwork);
+    }
+    .product-art-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.28s cubic-bezier(0.2, 0, 0, 1);
+    }
+    .product-card:hover .product-art-box img {
+      transform: scale(1.04);
+    }
+    .product-play-badge {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+    .product-card:hover .product-play-badge {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .product-play-badge:hover {
+      background: var(--accent-hover);
+      transform: scale(1.08) !important;
+    }
+    .product-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-1);
+      margin-top: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .product-subtitle {
+      font-size: 12px;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Artist Lockup (Circle) */
+    .artist-card {
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .artist-art-box {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      margin: 0 auto;
+      overflow: hidden;
+      box-shadow: var(--shadow-artwork);
+      background: var(--card-bg);
+    }
+    .artist-art-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.25s;
+    }
+    .artist-card:hover .artist-art-box img {
+      transform: scale(1.05);
+    }
+    .artist-card .product-title {
+      text-align: center;
+    }
+    .artist-card .product-subtitle {
+      text-align: center;
+    }
+
+    /* Category Brick (Genre / Mood) */
+    .category-brick {
+      position: relative;
+      height: 90px;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      padding: 16px;
+      display: flex;
+      align-items: flex-end;
+      box-shadow: var(--shadow-subtle);
+      cursor: pointer;
+      transition: transform 0.18s;
+      background-size: cover;
+      background-position: center;
+    }
+    .category-brick:hover {
+      transform: translateY(-2px);
+    }
+    .category-brick-overlay {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.7) 100%);
+    }
+    .category-brick-title {
+      position: relative;
+      z-index: 2;
+      font-size: 17px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.3px;
+    }
+
+    /* 3. Song Row / Tracklist Item Component */
+    .song-row {
+      display: grid;
+      grid-template-columns: 36px 1fr 180px 32px 50px 32px;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .song-row:hover {
+      background: var(--card-hover-bg);
+    }
+    .song-row.active {
+      background: var(--accent-tint);
+    }
+    .song-index {
+      color: var(--text-3);
+      font-variant-numeric: tabular-nums;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .song-row:hover .song-index-num {
+      display: none;
+    }
+    .song-play-icon {
+      display: none;
+      color: var(--accent);
+    }
+    .song-row:hover .song-play-icon {
+      display: inline-block;
+    }
+    .song-row.active .song-index-num {
+      display: none;
+    }
+    .song-row.active .song-eq-bars {
+      display: inline-flex;
+    }
+    .song-eq-bars {
+      display: none;
+      align-items: flex-end;
+      gap: 2px;
+      height: 12px;
+    }
+    .eq-bar {
+      width: 2.5px;
+      background: var(--accent);
+      border-radius: 1px;
+      animation: eqBounce 0.9s ease-in-out infinite alternate;
+    }
+    .eq-bar:nth-child(1) { height: 10px; animation-delay: 0.1s; }
+    .eq-bar:nth-child(2) { height: 5px; animation-delay: 0.3s; }
+    .eq-bar:nth-child(3) { height: 12px; animation-delay: 0.15s; }
+    .eq-bar:nth-child(4) { height: 7px; animation-delay: 0.4s; }
+    @keyframes eqBounce {
+      0% { height: 3px; }
+      100% { height: 12px; }
+    }
+    .song-info-cell {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      overflow: hidden;
+    }
+    .song-thumb {
+      width: 38px;
+      height: 38px;
+      border-radius: 4px;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+    .song-meta-text {
+      overflow: hidden;
+    }
+    .song-title-text {
+      font-weight: 600;
+      color: var(--text-1);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .song-row.active .song-title-text {
+      color: var(--accent);
+    }
+    .badge-e {
+      font-size: 8.5px;
+      font-weight: 700;
+      background: var(--text-3);
+      color: var(--page-bg);
+      padding: 1px 3px;
+      border-radius: 2px;
+      line-height: 1;
+    }
+    .badge-tag {
+      font-size: 8.5px;
+      font-weight: 600;
+      border: 1px solid var(--surface-border);
+      color: var(--text-3);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .song-artist-text {
+      font-size: 12px;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .song-album-cell {
+      color: var(--text-2);
+      font-size: 12.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .song-fav-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-3);
+      cursor: pointer;
+      opacity: 0;
+      transition: all 0.15s;
+    }
+    .song-row:hover .song-fav-btn,
+    .song-fav-btn.active {
+      opacity: 1;
+    }
+    .song-fav-btn.active {
+      color: var(--accent);
+    }
+    .song-time {
+      font-size: 12.5px;
+      color: var(--text-3);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .song-kebab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-3);
+      cursor: pointer;
+      opacity: 0;
+      text-align: right;
+      padding: 4px;
+      border-radius: 4px;
+    }
+    .song-row:hover .song-kebab-btn {
+      opacity: 1;
+    }
+    .song-kebab-btn:hover {
+      color: var(--text-1);
+    }
+
+    /* 4. Floating Player Bar Component */
+    .player-dock-demo {
+      width: 100%;
+      height: 72px;
+      background: var(--player-bg);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(28px) saturate(180%);
+      display: grid;
+      grid-template-columns: 280px 1fr 240px;
+      align-items: center;
+      padding: 0 20px;
+      box-shadow: var(--shadow-elevated);
+      user-select: none;
+    }
+    .dock-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      overflow: hidden;
+    }
+    .dock-art {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-sm);
+      object-fit: cover;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      flex-shrink: 0;
+    }
+    .dock-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-1);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dock-artist {
+      font-size: 11.5px;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dock-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      max-width: 500px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .transport-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 4px;
+    }
+    .transport-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s;
+    }
+    .transport-btn:hover {
+      color: var(--text-1);
+    }
+    .transport-btn.active {
+      color: var(--accent);
+    }
+    .transport-play-circle {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--text-1);
+      color: var(--page-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.12s;
+    }
+    .transport-play-circle:hover {
+      transform: scale(1.06);
+    }
+    .scrub-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+    }
+    .scrub-label {
+      font-size: 10.5px;
+      color: var(--text-3);
+      font-variant-numeric: tabular-nums;
+      width: 30px;
+      text-align: center;
+    }
+    .scrub-bar-track {
+      flex: 1;
+      height: 4px;
+      background: var(--scrub-track);
+      border-radius: 2px;
+      position: relative;
+      cursor: pointer;
+      transition: height 0.15s;
+    }
+    .scrub-bar-track:hover {
+      height: 6px;
+    }
+    .scrub-bar-fill {
+      height: 100%;
+      background: var(--scrub-fill);
+      width: 42%;
+      border-radius: 2px;
+    }
+    .scrub-bar-track:hover .scrub-bar-fill {
+      background: var(--accent);
+    }
+    .dock-right {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 14px;
+    }
+    .dock-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      cursor: pointer;
+      padding: 6px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.12s;
+    }
+    .dock-icon-btn:hover {
+      color: var(--text-1);
+      background: var(--card-bg);
+    }
+    .dock-icon-btn.active {
+      color: var(--accent);
+      background: var(--accent-tint);
+    }
+
+    /* 5. Lyrics Display Component */
+    .lyrics-demo-box {
+      background: linear-gradient(135deg, rgba(30, 20, 24, 0.8) 0%, rgba(20, 20, 24, 0.95) 100%);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 30px 36px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      max-width: 500px;
+    }
+    .karaoke-line {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-4);
+      cursor: pointer;
+      transition: color 0.25s, transform 0.25s;
+      line-height: 1.35;
+    }
+    .karaoke-line:hover {
+      color: var(--text-2);
+    }
+    .karaoke-line.singing {
+      color: #fff;
+      transform: scale(1.04);
+      transform-origin: left;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
+    }
+
+    /* 6. Context Menu / Popover Component */
+    .popover-demo {
+      width: 220px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--surface-border-strong);
+      border-radius: var(--radius-md);
+      padding: 6px;
+      box-shadow: var(--shadow-elevated);
+    }
+    .popover-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text-1);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .popover-item:hover {
+      background: var(--accent);
+      color: white;
+    }
+    .popover-divider {
+      height: 1px;
+      background: var(--surface-border);
+      margin: 4px 6px;
+    }
+
+    /* Interactive state test buttons */
+    .state-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .state-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      background: var(--card-bg);
+      border: 1px solid var(--surface-border);
+      color: var(--text-2);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .state-pill:hover,
+    .state-pill.active {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    @media (max-width: 900px) {
+      .workbench-layout { flex-direction: column; }
+      .category-nav-rail { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--surface-border); }
+      .spec-details-row { grid-template-columns: 1fr; }
+      .spec-pane:first-child { border-right: none; border-bottom: 1px solid var(--surface-border); }
+      .player-dock-demo { grid-template-columns: 1fr auto; }
+      .dock-right { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header class="top-header">
+    <div class="top-title-group">
+      <span class="apple-badge">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.92.04-2.02.62-2.66 1.37-.56.65-.96 1.69-.83 2.7 1.02.08 2.05-.53 2.57-1.22z"/></svg>
+        Component Workbench
+      </span>
+      <div class="top-heading">
+        <h1>Apple Music — Reusable Component System</h1>
+        <p>In-depth architectural breakdown & UI building blocks for development</p>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <select class="quick-jump-select" onchange="document.getElementById(this.value).scrollIntoView({behavior: 'smooth'})">
+        <option value="section-shell">1. Shell & Navigation</option>
+        <option value="section-hero">2. Hero & Promotion</option>
+        <option value="section-cards">3. Media Lockups & Shelves</option>
+        <option value="section-tracks">4. Tracklist & Song Rows</option>
+        <option value="section-player">5. Playback Bar & LCD</option>
+        <option value="section-lyrics">6. Lyrics & Overlays</option>
+      </select>
+
+      <a href="index.html" class="theme-toggle" style="text-decoration: none;" title="View Full Prototype App">
+        <span>‹ Prototype View</span>
+      </a>
+
+      <button class="theme-toggle" onclick="toggleTheme()">
+        <span id="theme-text">Dark Mode</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="workbench-layout">
+
+    <!-- Category Nav Rail -->
+    <nav class="category-nav-rail">
+      <div class="nav-group-title">App Shell</div>
+      <a class="nav-link active" href="#section-shell">
+        <span>AppShell & Sidebar</span>
+        <span class="tag">Layout</span>
+      </a>
+
+      <div class="nav-group-title">Editorial Display</div>
+      <a class="nav-link" href="#section-hero">
+        <span>PowerSwoosh Hero</span>
+        <span class="tag">Promo</span>
+      </a>
+
+      <div class="nav-group-title">Media Lockups</div>
+      <a class="nav-link" href="#section-cards">
+        <span>Product Lockup (1:1)</span>
+        <span class="tag">Album</span>
+      </a>
+      <a class="nav-link" href="#section-cards">
+        <span>Artist Lockup (Circle)</span>
+        <span class="tag">Artist</span>
+      </a>
+      <a class="nav-link" href="#section-cards">
+        <span>Category Brick</span>
+        <span class="tag">Genre</span>
+      </a>
+
+      <div class="nav-group-title">Data Lists</div>
+      <a class="nav-link" href="#section-tracks">
+        <span>SongRow (Track Table)</span>
+        <span class="tag">Row</span>
+      </a>
+
+      <div class="nav-group-title">Playback Engine</div>
+      <a class="nav-link" href="#section-player">
+        <span>Floating Player Bar</span>
+        <span class="tag">Audio</span>
+      </a>
+
+      <div class="nav-group-title">Flyouts & Panels</div>
+      <a class="nav-link" href="#section-lyrics">
+        <span>Time-Synced Lyrics</span>
+        <span class="tag">Karaoke</span>
+      </a>
+      <a class="nav-link" href="#section-lyrics">
+        <span>Context Action Sheet</span>
+        <span class="tag">Menu</span>
+      </a>
+    </nav>
+
+    <!-- Workbench Content Canvas -->
+    <main class="workbench-canvas">
+
+      <!-- ====================================================================
+           SECTION 1: APP SHELL & NAVIGATION
+           ==================================================================== -->
+      <section class="component-section" id="section-shell">
+        <div class="section-header-block">
+          <div>
+            <h2>1. Shell & Navigation Structure</h2>
+            <p>The foundation of the entire client layout — fixed 260px navigation rail paired with a dynamic scrollable viewport.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>SidebarNavigation <span class="comp-badge">Shell Widget</span></h3>
+              <p class="desc">Encapsulates search input, primary routes, personal library sections, and playlist collections.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage">
+            <div style="max-width: 250px; background: var(--sidebar-bg); border: 1px solid var(--surface-border); border-radius: var(--radius-md); padding: 14px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-weight: 700; font-size: 16px;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="var(--accent)"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.92.04-2.02.62-2.66 1.37-.56.65-.96 1.69-.83 2.7 1.02.08 2.05-.53 2.57-1.22z"/></svg>
+                <span>Music</span>
+              </div>
+              
+              <!-- Search box preview -->
+              <div style="background: var(--card-bg); border-radius: 6px; padding: 6px 10px; display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <span style="font-size: 12px; color: var(--text-3);">Search</span>
+              </div>
+
+              <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--text-3); margin-bottom: 4px;">Library</div>
+              <div style="padding: 6px 8px; border-radius: 6px; background: var(--accent-tint); color: var(--accent); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                <span>Recently Added</span>
+              </div>
+              <div style="padding: 6px 8px; border-radius: 6px; color: var(--text-2); font-size: 13px; display: flex; align-items: center; gap: 8px; margin-top: 2px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5z"/></svg>
+                <span>Albums</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">React Component Implementation</div>
+              <div class="code-snippet">export interface SidebarNavProps {
+  currentRoute: string;
+  playlists: Array<{ id: string; name: string }>;
+  onNavigate: (route: string) => void;
+  onSearch: (q: string) => void;
+}
+
+export const SidebarNav: React.FC&lt;SidebarNavProps&gt; = ({ 
+  currentRoute, 
+  playlists, 
+  onNavigate 
+}) => {
+  return (
+    &lt;aside className="w-[260px] bg-[#181818] border-r border-white/5 flex flex-col h-full"&gt;
+      &lt;BrandHeader logo="/assets/apple-music.svg" /&gt;
+      &lt;SearchField onSearch={onSearch} /&gt;
+      &lt;NavGroup title="Storefront" items={STOREFRONT_LINKS} active={currentRoute} /&gt;
+      &lt;NavGroup title="Library" items={LIBRARY_LINKS} active={currentRoute} /&gt;
+      &lt;PlaylistTree playlists={playlists} /&gt;
+      &lt;UserProfileCapsule /&gt;
+    &lt;/aside&gt;
+  );
+};</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">GNOME / Desktop System Mapping</div>
+              <ul class="guideline-list">
+                <li>Map directly to <code>Adw.NavigationSplitView</code> with the sidebar occupying the left pane.</li>
+                <li>Set <code>collapsed-width: 800px</code> so the sidebar automatically folds into a mobile bottom bar or navigation drawer on small screens.</li>
+                <li>Implement <code>Gtk.SearchEntry</code> connected to the Apple Music API search debouncer (300ms delay).</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ====================================================================
+           SECTION 2: HERO & PROMOTION
+           ==================================================================== -->
+      <section class="component-section" id="section-hero">
+        <div class="section-header-block">
+          <div>
+            <h2>2. Hero & Promotion Components</h2>
+            <p>Full-width animated promo headers that anchor Home, Browse, and Artist detail views.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>PowerSwoosh <span class="comp-badge">Hero Carousel</span></h3>
+              <p class="desc">Prominent editorial banner with background imagery, gradient scrim, headline, and direct playback triggers.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage">
+            <div class="powerswoosh-banner" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=1200&auto=format&fit=crop');">
+              <div class="powerswoosh-scrim"></div>
+              <div class="powerswoosh-paddles">
+                <button class="paddle-icon-btn" title="Previous Slide">‹</button>
+                <button class="paddle-icon-btn" title="Next Slide">›</button>
+              </div>
+              <div class="powerswoosh-body">
+                <div class="powerswoosh-eyebrow">FEATURED PLAYLIST</div>
+                <h3 class="powerswoosh-title">1. Lively — High Energy Rock</h3>
+                <p class="powerswoosh-desc">Featuring UNFAIR RULE, Four Year Strong, and Kaneyorimasaru. Mastered in Spatial Audio with Dolby Atmos.</p>
+                <div class="powerswoosh-actions">
+                  <button class="action-btn-pill">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Play
+                  </button>
+                  <button class="action-btn-pill secondary">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">Props & Data Model</div>
+              <div class="code-snippet">export interface PowerSwooshItem {
+  id: string;
+  categoryEyebrow: string;
+  headlineTitle: string;
+  description: string;
+  backgroundImageUrl: string;
+  accentColor?: string;
+  playAction: {
+    resourceId: string;
+    type: 'playlist' | 'album' | 'station';
+  };
+}</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">Architecture Notes</div>
+              <ul class="guideline-list">
+                <li>Preload next banner image in background to ensure zero flicker on transition.</li>
+                <li>Apply CSS <code>linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.85))</code> so white text remains readable across all image brightness levels.</li>
+                <li>In GNOME, wrap inside <code>Adw.Carousel</code> with swipe gestures enabled.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ====================================================================
+           SECTION 3: MEDIA LOCKUPS & SHELVES
+           ==================================================================== -->
+      <section class="component-section" id="section-cards">
+        <div class="section-header-block">
+          <div>
+            <h2>3. Media Cards & Shelves (The Core Building Blocks)</h2>
+            <p>Every collection is rendered through this family of polymorphic cards.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>Lockup Family & Shelf Grid <span class="comp-badge">Media Cards</span></h3>
+              <p class="desc">Square album/playlist cards, circular artist portraits, and gradient genre bricks.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage">
+            <div class="shelf-wrapper">
+              <div class="shelf-head">
+                <div>
+                  <h3 class="shelf-title">Recently Played & Favorites</h3>
+                  <div class="shelf-subtitle">Interactive cards with hover play overlays</div>
+                </div>
+                <a class="shelf-link" href="javascript:void(0)">See All &rsaquo;</a>
+              </div>
+
+              <div class="lockup-row">
+                <!-- Standard Card 1 -->
+                <div class="product-card">
+                  <div class="product-art-box">
+                    <img src="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=300&auto=format&fit=crop" alt="Itsumo No Koto">
+                    <div class="product-play-badge">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+                    </div>
+                  </div>
+                  <div class="product-title">Itsumo No Koto</div>
+                  <div class="product-subtitle">UNFAIR RULE</div>
+                </div>
+
+                <!-- Standard Card 2 -->
+                <div class="product-card">
+                  <div class="product-art-box">
+                    <img src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?q=80&w=300&auto=format&fit=crop" alt="Rise or Die Trying">
+                    <div class="product-play-badge">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+                    </div>
+                  </div>
+                  <div class="product-title">Rise or Die Trying</div>
+                  <div class="product-subtitle">Four Year Strong</div>
+                </div>
+
+                <!-- Artist Card -->
+                <div class="artist-card">
+                  <div class="artist-art-box">
+                    <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=300&auto=format&fit=crop" alt="Kaneyorimasaru">
+                  </div>
+                  <div class="product-title">Kaneyorimasaru</div>
+                  <div class="product-subtitle">Artist</div>
+                </div>
+
+                <!-- Genre Brick -->
+                <div class="category-brick" style="background-image: url('https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?q=80&w=300&auto=format&fit=crop');">
+                  <div class="category-brick-overlay"></div>
+                  <div class="category-brick-title">Spatial Audio</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">Polymorphic Lockup Interface</div>
+              <div class="code-snippet">export type LockupVariant = 'standard' | 'artist' | 'brick' | 'station';
+
+export interface ProductLockupProps {
+  variant?: LockupVariant;
+  id: string;
+  title: string;
+  subtitle?: string;
+  artworkUrl: string;
+  isExplicit?: boolean;
+  onPlay: (id: string) => void;
+  onClick: (id: string) => void;
+}</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">Styling & Hover Mechanics</div>
+              <ul class="guideline-list">
+                <li>Border-radius: <code>10px</code> for standard cards, <code>50%</code> for artist avatars, <code>14px</code> for genre bricks.</li>
+                <li>Hover overlay uses <code>transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s</code>.</li>
+                <li>Artwork shadow: <code>0 8px 24px rgba(0,0,0,0.4)</code> to create floating depth against dark surfaces.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ====================================================================
+           SECTION 4: TRACKLIST & SONG ROWS
+           ==================================================================== -->
+      <section class="component-section" id="section-tracks">
+        <div class="section-header-block">
+          <div>
+            <h2>4. Tracklist Table & Song Rows</h2>
+            <p>The workhorse list component displaying songs with dynamic playing states and micro-interactions.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>SongRow <span class="comp-badge">Table Item</span></h3>
+              <p class="desc">Handles track numbering, hover play toggle, animated equalizer soundwave, explicit badge, and favorite status.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage">
+            <!-- Row 1: Resting state -->
+            <div class="song-row">
+              <div class="song-index">
+                <span class="song-index-num">1</span>
+                <span class="song-play-icon">▶</span>
+              </div>
+              <div class="song-info-cell">
+                <img src="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=100&auto=format&fit=crop" class="song-thumb" alt="Track">
+                <div class="song-meta-text">
+                  <div class="song-title-text">
+                    Itsumo No Koto
+                    <span class="badge-tag">Lossless</span>
+                  </div>
+                  <div class="song-artist-text">UNFAIR RULE</div>
+                </div>
+              </div>
+              <div class="song-album-cell">Itsumo No Koto - Single</div>
+              <div><button class="song-fav-btn active" title="Favorited">★</button></div>
+              <div class="song-time">3:18</div>
+              <div><button class="song-kebab-btn">•••</button></div>
+            </div>
+
+            <!-- Row 2: Active / Playing State -->
+            <div class="song-row active">
+              <div class="song-index">
+                <div class="song-eq-bars">
+                  <div class="eq-bar"></div>
+                  <div class="eq-bar"></div>
+                  <div class="eq-bar"></div>
+                  <div class="eq-bar"></div>
+                </div>
+              </div>
+              <div class="song-info-cell">
+                <img src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?q=80&w=100&auto=format&fit=crop" class="song-thumb" alt="Track">
+                <div class="song-meta-text">
+                  <div class="song-title-text">
+                    Heroes Get Remembered, Legends Never Die
+                    <span class="badge-e">E</span>
+                    <span class="badge-tag">Lossless</span>
+                  </div>
+                  <div class="song-artist-text">Four Year Strong</div>
+                </div>
+              </div>
+              <div class="song-album-cell">Rise or Die Trying</div>
+              <div><button class="song-fav-btn" title="Add to favorites">☆</button></div>
+              <div class="song-time">3:36</div>
+              <div><button class="song-kebab-btn">•••</button></div>
+            </div>
+
+            <!-- Row 3: Explicit track -->
+            <div class="song-row">
+              <div class="song-index">
+                <span class="song-index-num">3</span>
+                <span class="song-play-icon">▶</span>
+              </div>
+              <div class="song-info-cell">
+                <img src="https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?q=80&w=100&auto=format&fit=crop" class="song-thumb" alt="Track">
+                <div class="song-meta-text">
+                  <div class="song-title-text">
+                    Watashi no Nocturne
+                    <span class="badge-tag">Dolby Atmos</span>
+                  </div>
+                  <div class="song-artist-text">Kaneyorimasaru</div>
+                </div>
+              </div>
+              <div class="song-album-cell">Watashi no Nocturne</div>
+              <div><button class="song-fav-btn" title="Add to favorites">☆</button></div>
+              <div class="song-time">4:02</div>
+              <div><button class="song-kebab-btn">•••</button></div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">Component API Contract</div>
+              <div class="code-snippet">export interface SongRowProps {
+  index: number;
+  track: {
+    id: string;
+    title: string;
+    artist: string;
+    album: string;
+    durationFormatted: string;
+    artworkUrl: string;
+    isExplicit: boolean;
+    isLossless: boolean;
+    isFavorite: boolean;
+  };
+  isActive: boolean;
+  isPlaying: boolean;
+  onPlay: (id: string) => void;
+  onToggleFavorite: (id: string) => void;
+  onContextMenu: (e: React.MouseEvent, id: string) => void;
+}</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">Virtualization & Scalability</div>
+              <ul class="guideline-list">
+                <li>For large playlists (500+ songs), wrap rows inside <code>@tanstack/react-virtual</code> or <code>react-window</code>.</li>
+                <li>In GTK4/GNOME, implement using <code>Gtk.ListView</code> with a recycled <code>Gtk.SignalListItemFactory</code>.</li>
+                <li>Ensure time columns use <code>font-variant-numeric: tabular-nums</code> so row widths don't jitter during playback.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ====================================================================
+           SECTION 5: PLAYBACK ENGINE & PLAYER BAR
+           ==================================================================== -->
+      <section class="component-section" id="section-player">
+        <div class="section-header-block">
+          <div>
+            <h2>5. Floating Player Bar & LCD Scrubber</h2>
+            <p>Persistent dock anchored at the bottom of the screen providing transport controls and scrubber feedback.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>FloatingPlayerBar <span class="comp-badge">Persistent Audio Dock</span></h3>
+              <p class="desc">Tri-zone player deck featuring Now Playing metadata, transport deck, LCD scrub slider, and panel triggers.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage">
+            <div class="player-dock-demo">
+              <!-- Left: Meta -->
+              <div class="dock-left">
+                <img src="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?q=80&w=100&auto=format&fit=crop" class="dock-art" alt="Track Art">
+                <div>
+                  <div class="dock-title">Itsumo No Koto</div>
+                  <div class="dock-artist">UNFAIR RULE</div>
+                </div>
+                <button class="transport-btn active" style="margin-left: 6px;">★</button>
+              </div>
+
+              <!-- Center: Transport & Scrubber -->
+              <div class="dock-center">
+                <div class="transport-bar">
+                  <button class="transport-btn">🔀</button>
+                  <button class="transport-btn">⏮</button>
+                  <button class="transport-play-circle">⏸</button>
+                  <button class="transport-btn">⏭</button>
+                  <button class="transport-btn">🔁</button>
+                </div>
+                <div class="scrub-row">
+                  <span class="scrub-label">1:24</span>
+                  <div class="scrub-bar-track">
+                    <div class="scrub-bar-fill"></div>
+                  </div>
+                  <span class="scrub-label">3:18</span>
+                </div>
+              </div>
+
+              <!-- Right: Volume & Drawers -->
+              <div class="dock-right">
+                <button class="dock-icon-btn active" title="Lyrics">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                </button>
+                <button class="dock-icon-btn" title="Queue">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                </button>
+                <div style="display: flex; align-items: center; gap: 6px; width: 100px;">
+                  <span style="font-size: 13px; color: var(--text-3);">🔊</span>
+                  <div class="scrub-bar-track" style="height: 4px;">
+                    <div class="scrub-bar-fill" style="width: 75%;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">Audio Controller Binding</div>
+              <div class="code-snippet">// Hook binding to MusicKit JS / Audio Engine
+export function usePlayerController() {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const togglePlay = () => {
+    const mk = window.MusicKit?.getInstance();
+    if (mk?.isPlaying) {
+      mk.pause();
+    } else {
+      mk.play();
+    }
+  };
+
+  return { isPlaying, currentTime, duration, togglePlay };
+}</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">Linux Desktop Integration (MPRIS2)</div>
+              <ul class="guideline-list">
+                <li>Connect playback states to D-Bus interface <code>org.mpris.MediaPlayer2.Player</code>.</li>
+                <li>Emit <code>PlaybackStatus</code> signals on play/pause so the GNOME Shell notification panel stays in sync.</li>
+                <li>Export <code>Metadata</code> map (title, artist, album, mpris:artUrl) for lockscreen widget display.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ====================================================================
+           SECTION 6: LYRICS & OVERLAYS
+           ==================================================================== -->
+      <section class="component-section" id="section-lyrics">
+        <div class="section-header-block">
+          <div>
+            <h2>6. Time-Synced Lyrics & Context Sheets</h2>
+            <p>Immersive karaoke lyrics engine and modal action menus.</p>
+          </div>
+        </div>
+
+        <div class="component-card">
+          <div class="component-card-bar">
+            <div class="component-title-wrap">
+              <h3>LyricsDisplay & ContextMenu <span class="comp-badge">Interactive Flyouts</span></h3>
+              <p class="desc">Line-synced lyric glow animation and contextual menu popover.</p>
+            </div>
+          </div>
+
+          <div class="component-preview-stage" style="flex-direction: row; justify-content: space-around; flex-wrap: wrap; gap: 30px;">
+            <!-- Lyrics Preview -->
+            <div class="lyrics-demo-box">
+              <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-3); letter-spacing: 0.8px;">Time-Synced Lyrics</div>
+              <div class="karaoke-line">毎日君と過ごした日々に</div>
+              <div class="karaoke-line singing">変わらない温もりを覚えているよ</div>
+              <div class="karaoke-line">風が通り過ぎた交差点で</div>
+              <div class="karaoke-line">もう一度だけ手を握り返して</div>
+            </div>
+
+            <!-- Context Popover Preview -->
+            <div class="popover-demo">
+              <div class="popover-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+                Play Next
+              </div>
+              <div class="popover-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z"/></svg>
+                Play Later
+              </div>
+              <div class="popover-divider"></div>
+              <div class="popover-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                Add to Playlist...
+              </div>
+              <div class="popover-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                Love Track
+              </div>
+              <div class="popover-divider"></div>
+              <div class="popover-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+                Share
+              </div>
+            </div>
+          </div>
+
+          <div class="spec-details-row">
+            <div class="spec-pane">
+              <div class="pane-title">Lyrics Synchronization Model</div>
+              <div class="code-snippet">export interface LyricTimestampLine {
+  id: string;
+  startTimeMs: number;
+  endTimeMs: number;
+  text: string;
+}
+
+export function getActiveLyricIndex(
+  lines: LyricTimestampLine[], 
+  currentPositionMs: number
+): number {
+  return lines.findIndex(
+    line => currentPositionMs >= line.startTimeMs && currentPositionMs < line.endTimeMs
+  );
+}</div>
+            </div>
+            <div class="spec-pane">
+              <div class="pane-title">Visual Styling</div>
+              <ul class="guideline-list">
+                <li>Singing line has <code>text-shadow: 0 0 20px rgba(255,255,255,0.4)</code> and <code>transform: scale(1.04)</code>.</li>
+                <li>Non-active lines have reduced opacity (<code>rgba(255,255,255,0.25)</code>).</li>
+                <li>Clicking any lyric invokes <code>musicKit.seekToTime(line.startTimeMs / 1000)</code>.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      document.getElementById('theme-text').textContent = next === 'dark' ? 'Dark Mode' : 'Light Mode';
+    }
+
+    // Smooth active highlight on rail
+    const navLinks = document.querySelectorAll('.category-nav-rail .nav-link');
+    navLinks.forEach(link => {
+      link.addEventListener('click', () => {
+        navLinks.forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
