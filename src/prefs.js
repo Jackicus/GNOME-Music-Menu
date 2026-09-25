@@ -6,15 +6,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Pango from 'gi://Pango';
 
-import {ACTIONS as BASE_ACTIONS, NATIVE_KEYS, padLabel} from './lib/actions.js';
-
-// In actions.js, 'watched' was renamed to 'play-pause' for Music Menu.
-// We map it here so controls work whether actions.js has landed yet or not.
-const ACTIONS = BASE_ACTIONS.map(action => {
-    if (action.key === 'watched')
-        return {key: 'play-pause', title: 'Play / Pause', subtitle: 'Plays or pauses playback'};
-    return action;
-});
+import {ACTIONS, NATIVE_KEYS, padLabel} from './lib/actions.js';
 
 // The one shortcut: the library's button, pressed from the keyboard.
 const SHORTCUT_KEY = 'library-shortcut';
@@ -393,10 +385,10 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage({title: 'Apple Music', icon_name: 'audio-x-generic-symbolic'});
 
         // --------------------------------------------------------------
-        // Status & Account
+        // Status and Account
         // --------------------------------------------------------------
         const statusGroup = new Adw.PreferencesGroup({
-            title: 'Status & Account',
+            title: 'Status and Account',
         });
         page.add(statusGroup);
 
@@ -470,10 +462,10 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         statusGroup.add(signInRow);
 
         // --------------------------------------------------------------
-        // Library & Sync
+        // Library and Sync
         // --------------------------------------------------------------
         const syncGroup = new Adw.PreferencesGroup({
-            title: 'Library & Sync',
+            title: 'Library and Sync',
         });
         page.add(syncGroup);
 
@@ -999,15 +991,7 @@ function bindSetting(settings, key, object, property, flags = Gio.SettingsBindFl
 }
 
 function schemaKey(settings, prefix, actionKey) {
-    const key = `${prefix}-${actionKey}`;
-    if (settings.settings_schema?.has_key(key))
-        return key;
-    if (actionKey === 'play-pause') {
-        const legacy = `${prefix}-watched`;
-        if (settings.settings_schema?.has_key(legacy))
-            return legacy;
-    }
-    return key;
+    return `${prefix}-${actionKey}`;
 }
 
 function formatSyncSubtitle(lastSyncStr, counts = null) {
