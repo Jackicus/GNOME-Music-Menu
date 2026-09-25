@@ -1,6 +1,13 @@
 // Pure helper functions for the player: time formatting, MPRIS metadata
 // parsing, and time-synced lyrics lookup. Kept free of St and shell
 // imports so they can be unit-tested directly in GJS with `gjs -m`.
+//
+// cacheRemoteArt() is the one exception: it touches the filesystem and the
+// network, but never St, so it stays here rather than in playerBar.js or
+// nowPlaying.js, which both need it.
+
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 /**
  * Format a duration in seconds into a display string (e.g. "3:24", "-0:45", "1:02:30").
@@ -145,4 +152,70 @@ export function findLyricIndex(lines, positionMs) {
     }
 
     return best;
+}
+
+// MPRIS hands over the now-playing art as an https URL (Chrome's own media
+// session), not a path in the library's art cache, so it has to be fetched
+// rather than read. Fetched once per URL into a small cache of its own and
+// reused after that; resolves with a local path the caller can drop straight
+// into a `background-image: url("file://...")` style the way every other
+// piece of artwork in the app is drawn, or null if the fetch failed or a
+// newer request superseded it.
+const ART_CACHE_DIR = GLib.build_filenamev([GLib.get_user_cache_dir(), 'music-menu', 'mpris-art']);
+
+export function cacheRemoteArt(url, cancellable = null) {
+    return new Promise(resolve => {
+        if (!url || typeof url !== 'string') {
+            resolve(null);
+            return;
+        }
+
+        let digest;
+        try {
+            digest = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, url, -1);
+        } catch {
+            resolve(null);
+            return;
+        }
+        const path = GLib.build_filenamev([ART_CACHE_DIR, `${digest}.img`]);
+        if (GLib.file_test(path, GLib.FileTest.EXISTS)) {
+            resolve(path);
+            return;
+        }
+
+        let source;
+        try {
+            source = Gio.File.new_for_uri(url);
+        } catch {
+            resolve(null);
+            return;
+        }
+
+        source.load_bytes_async(cancellable, (file, res) => {
+            let bytes;
+            try {
+                [bytes] = file.load_bytes_finish(res);
+            } catch {
+                resolve(null);
+                return;
+            }
+
+            // Best-effort: a cache directory that fails to create just means
+            // the art is fetched again next time, not a broken player.
+            GLib.mkdir_with_parents(ART_CACHE_DIR, 0o700);
+
+            const dest = Gio.File.new_for_path(path);
+            dest.replace_contents_bytes_async(
+                bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, cancellable,
+                (d, res2) => {
+                    try {
+                        d.replace_contents_finish(res2);
+                        resolve(path);
+                    } catch {
+                        resolve(null);
+                    }
+                }
+            );
+        });
+    });
 }

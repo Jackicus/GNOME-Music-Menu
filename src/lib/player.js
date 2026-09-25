@@ -705,6 +705,10 @@ export class Player extends Signals.EventEmitter {
                         changed = true;
                     }
                 } else if (res.track && !this._track && (res.state === 'playing' || res.state === 'paused')) {
+                    // MPRIS is reporting a status but stayed silent on Metadata
+                    // (seen right after a track change on some players): fill
+                    // the track in from the poll, position included, so the
+                    // scrubber does not start from wherever it last was.
                     const durUs = Math.round((Number(res.track.durationMs) || 0) * 1000);
                     this._track = {
                         title: res.track.title || '',
@@ -717,6 +721,7 @@ export class Player extends Signals.EventEmitter {
                         trackId: null,
                     };
                     this._lengthUs = durUs;
+                    this._readPositionUs(Math.round((Number(res.position) || 0) * 1e6));
                     changed = true;
                 }
 
@@ -789,95 +794,31 @@ export class Player extends Signals.EventEmitter {
         });
     }
 
-    async playPause() {
+    // Every transport verb is the same shape: try the MPRIS method we are
+    // already attached to, and fall back to am.py's own `control` command
+    // (which reaches the engine even before an MPRIS owner has been found,
+    // or if the MPRIS call itself is refused).
+    async _transport(label, mprisMethod, amctlVerb) {
         try {
             if (this._owner)
-                await this._callPlayerMethod('PlayPause');
+                await this._callPlayerMethod(mprisMethod);
             else
-                await amctl.run(['control', 'toggle'], {cancellable: this._cancellable});
+                await amctl.run(['control', amctlVerb], {cancellable: this._cancellable});
         } catch {
             try {
-                await amctl.run(['control', 'toggle'], {cancellable: this._cancellable});
+                await amctl.run(['control', amctlVerb], {cancellable: this._cancellable});
             } catch (e) {
-                console.warn(`[Music Menu] playPause failed: ${e.message}`);
+                console.warn(`[Music Menu] ${label} failed: ${e.message}`);
             }
         }
     }
 
-    async next() {
-        try {
-            if (this._owner)
-                await this._callPlayerMethod('Next');
-            else
-                await amctl.run(['control', 'next'], {cancellable: this._cancellable});
-        } catch {
-            try {
-                await amctl.run(['control', 'next'], {cancellable: this._cancellable});
-            } catch (e) {
-                console.warn(`[Music Menu] next failed: ${e.message}`);
-            }
-        }
-    }
-
-    async previous() {
-        try {
-            if (this._owner)
-                await this._callPlayerMethod('Previous');
-            else
-                await amctl.run(['control', 'previous'], {cancellable: this._cancellable});
-        } catch {
-            try {
-                await amctl.run(['control', 'previous'], {cancellable: this._cancellable});
-            } catch (e) {
-                console.warn(`[Music Menu] previous failed: ${e.message}`);
-            }
-        }
-    }
-
-    async play() {
-        try {
-            if (this._owner)
-                await this._callPlayerMethod('Play');
-            else
-                await amctl.run(['control', 'play'], {cancellable: this._cancellable});
-        } catch {
-            try {
-                await amctl.run(['control', 'play'], {cancellable: this._cancellable});
-            } catch (e) {
-                console.warn(`[Music Menu] play failed: ${e.message}`);
-            }
-        }
-    }
-
-    async pause() {
-        try {
-            if (this._owner)
-                await this._callPlayerMethod('Pause');
-            else
-                await amctl.run(['control', 'pause'], {cancellable: this._cancellable});
-        } catch {
-            try {
-                await amctl.run(['control', 'pause'], {cancellable: this._cancellable});
-            } catch (e) {
-                console.warn(`[Music Menu] pause failed: ${e.message}`);
-            }
-        }
-    }
-
-    async stop() {
-        try {
-            if (this._owner)
-                await this._callPlayerMethod('Stop');
-            else
-                await amctl.run(['control', 'stop'], {cancellable: this._cancellable});
-        } catch {
-            try {
-                await amctl.run(['control', 'stop'], {cancellable: this._cancellable});
-            } catch (e) {
-                console.warn(`[Music Menu] stop failed: ${e.message}`);
-            }
-        }
-    }
+    playPause() { return this._transport('playPause', 'PlayPause', 'toggle'); }
+    next() { return this._transport('next', 'Next', 'next'); }
+    previous() { return this._transport('previous', 'Previous', 'previous'); }
+    play() { return this._transport('play', 'Play', 'play'); }
+    pause() { return this._transport('pause', 'Pause', 'pause'); }
+    stop() { return this._transport('stop', 'Stop', 'stop'); }
 
     async seek(positionUs) {
         const targetUs = Math.max(0, Math.round(positionUs));
@@ -928,104 +869,45 @@ export class Player extends Signals.EventEmitter {
         }
     }
 
-    async toggleShuffle() {
-        try {
-            let handled = false;
-            if (this._hasMprisShuffle && this._owner) {
-                const nextVal = !this._shuffle;
-                try {
-                    await this._setMprisProperty('Shuffle', new GLib.Variant('b', nextVal));
-                    this._shuffle = nextVal;
-                    this.emit('changed');
-                    handled = true;
-                } catch {
-                    handled = false;
-                }
-            }
-
-            if (!handled) {
-                const res = await amctl.run(['shuffle', 'toggle'], {cancellable: this._cancellable});
-                if (res && typeof res.shuffle === 'boolean') {
-                    this._shuffle = res.shuffle;
-                    this.emit('changed');
-                }
-            }
-        } catch (e) {
-            console.warn(`[Music Menu] toggleShuffle failed: ${e.message}`);
-        }
-    }
-
     async setShuffle(enabled) {
         const val = !!enabled;
         if (this._shuffle === val)
             return;
-
         try {
-            let handled = false;
             if (this._hasMprisShuffle && this._owner) {
                 try {
                     await this._setMprisProperty('Shuffle', new GLib.Variant('b', val));
                     this._shuffle = val;
                     this.emit('changed');
-                    handled = true;
+                    return;
                 } catch {
-                    handled = false;
+                    // MPRIS refused the property; fall back to am.py below.
                 }
             }
-
-            if (!handled) {
-                const arg = val ? 'on' : 'off';
-                const res = await amctl.run(['shuffle', arg], {cancellable: this._cancellable});
-                if (res && typeof res.shuffle === 'boolean') {
-                    this._shuffle = res.shuffle;
-                    this.emit('changed');
-                }
+            const res = await amctl.run(['shuffle', val ? 'on' : 'off'], {cancellable: this._cancellable});
+            if (res && typeof res.shuffle === 'boolean') {
+                this._shuffle = res.shuffle;
+                this.emit('changed');
             }
         } catch (e) {
             console.warn(`[Music Menu] setShuffle failed: ${e.message}`);
         }
     }
 
-    async toggleRepeat() {
-        return this.cycleRepeat();
-    }
-
-    async cycleRepeat() {
+    async toggleShuffle() {
+        // Chrome's MPRIS Shuffle can be set directly and read straight back,
+        // so a plain negation is safe; without it, am.py's own "toggle" is
+        // the one place that knows the current value.
+        if (this._hasMprisShuffle && this._owner)
+            return this.setShuffle(!this._shuffle);
         try {
-            let handled = false;
-            if (this._hasMprisLoopStatus && this._owner) {
-                // Cycle: none -> all -> one -> none
-                const nextRepeat = this._repeat === 'none'
-                    ? 'all'
-                    : (this._repeat === 'all' ? 'one' : 'none');
-                const mprisVal = nextRepeat === 'one'
-                    ? 'Track'
-                    : (nextRepeat === 'all' ? 'Playlist' : 'None');
-
-                try {
-                    await this._setMprisProperty('LoopStatus', new GLib.Variant('s', mprisVal));
-                    this._repeat = nextRepeat;
-                    this.emit('changed');
-                    handled = true;
-                } catch {
-                    handled = false;
-                }
-            }
-
-            if (!handled) {
-                const res = await amctl.run(['repeat', 'cycle'], {cancellable: this._cancellable});
-                if (res && res.repeat) {
-                    let rep = String(res.repeat).toLowerCase();
-                    if (rep === 'off')
-                        rep = 'none';
-                    if (['none', 'one', 'all'].includes(rep)) {
-                        this._repeat = rep;
-                        this.emit('changed');
-                    }
-                }
+            const res = await amctl.run(['shuffle', 'toggle'], {cancellable: this._cancellable});
+            if (res && typeof res.shuffle === 'boolean') {
+                this._shuffle = res.shuffle;
+                this.emit('changed');
             }
         } catch (e) {
-            console.warn(`[Music Menu] cycleRepeat failed: ${e.message}`);
+            console.warn(`[Music Menu] toggleShuffle failed: ${e.message}`);
         }
     }
 
@@ -1037,38 +919,56 @@ export class Player extends Signals.EventEmitter {
             return;
         if (this._repeat === rep)
             return;
-
         try {
-            let handled = false;
             if (this._hasMprisLoopStatus && this._owner) {
-                const mprisVal = rep === 'one'
-                    ? 'Track'
-                    : (rep === 'all' ? 'Playlist' : 'None');
+                const mprisVal = rep === 'one' ? 'Track' : (rep === 'all' ? 'Playlist' : 'None');
                 try {
                     await this._setMprisProperty('LoopStatus', new GLib.Variant('s', mprisVal));
                     this._repeat = rep;
                     this.emit('changed');
-                    handled = true;
+                    return;
                 } catch {
-                    handled = false;
+                    // MPRIS refused the property; fall back to am.py below.
                 }
             }
-
-            if (!handled) {
-                const res = await amctl.run(['repeat', rep], {cancellable: this._cancellable});
-                if (res && res.repeat) {
-                    let r = String(res.repeat).toLowerCase();
-                    if (r === 'off')
-                        r = 'none';
-                    if (['none', 'one', 'all'].includes(r)) {
-                        this._repeat = r;
-                        this.emit('changed');
-                    }
+            const res = await amctl.run(['repeat', rep], {cancellable: this._cancellable});
+            if (res && res.repeat) {
+                let r = String(res.repeat).toLowerCase();
+                if (r === 'off')
+                    r = 'none';
+                if (['none', 'one', 'all'].includes(r)) {
+                    this._repeat = r;
+                    this.emit('changed');
                 }
             }
         } catch (e) {
             console.warn(`[Music Menu] setRepeat failed: ${e.message}`);
         }
+    }
+
+    async cycleRepeat() {
+        if (this._hasMprisLoopStatus && this._owner) {
+            const nextRepeat = this._repeat === 'none' ? 'all' : (this._repeat === 'all' ? 'one' : 'none');
+            return this.setRepeat(nextRepeat);
+        }
+        try {
+            const res = await amctl.run(['repeat', 'cycle'], {cancellable: this._cancellable});
+            if (res && res.repeat) {
+                let rep = String(res.repeat).toLowerCase();
+                if (rep === 'off')
+                    rep = 'none';
+                if (['none', 'one', 'all'].includes(rep)) {
+                    this._repeat = rep;
+                    this.emit('changed');
+                }
+            }
+        } catch (e) {
+            console.warn(`[Music Menu] cycleRepeat failed: ${e.message}`);
+        }
+    }
+
+    toggleRepeat() {
+        return this.cycleRepeat();
     }
 
     // ------------------------------------------------------------------
