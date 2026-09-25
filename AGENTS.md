@@ -224,3 +224,48 @@ otherwise.** Two nested shells collide on the same Wayland display name.
   `Co-Authored-By: Gemini (agy) <noreply@google.com>`.
 - Don't edit files your brief doesn't give you. If you need a change there,
   say so in your final report.
+
+## Module contracts between parallel jobs
+
+These are fixed so that jobs building each side in parallel meet in the
+middle. Implement exactly these names and signatures. If you only consume one,
+import it and don't create a stub of it: the other job's branch brings the
+real file.
+
+```js
+// player.js  (owner: player job)
+export class Player {            // extends Signals.EventEmitter (misc/signals.js)
+    constructor();               // starts following the engine's MPRIS player (Chrome's media session)
+    get state();                 // {status: 'Playing'|'Paused'|'Stopped', track: {title, artist, album, artUrl, lengthUs} | null,
+                                 //  positionUs, canNext, canPrevious, canSeek, shuffle, repeat}
+    playPause(); next(); previous(); seek(positionUs);   // MPRIS
+    // emits 'changed' (any state change) and 'position' (about 1/s while playing, reckoned locally, not polled)
+    destroy();
+}
+// playerBar.js (owner: player job)
+export class PlayerBar {         // .actor is an St widget, full width, about 64px tall
+    constructor({player, onOpenNowPlaying});
+    get actor(); destroy();
+}
+// nowPlaying.js (owner: player job)
+export class NowPlayingView {    // big art + title + scrubber + transport, a Lyrics tab and an Up Next tab
+    constructor({player});       // lyrics/queue come from amctl.run(['lyrics', id]) / (['queue'])
+    get actor(); destroy();
+}
+// shelfView.js (owner: extras job)
+export class ShelfView {         // vertical ScrollView of shelves; each shelf is a title + "See All ›" + a horizontal row of tiles
+    constructor({shelves, tileSize, onActivate(item, sourceActor), onContextMenu(item, sourceActor)});
+    get actor(); destroy();
+}
+// itemMenu.js (owner: extras job)
+export function openItemMenu({item, track = null, sourceActor});   // PopupMenu at sourceActor, all actions via amctl
+// searchProvider.js (owner: extras job)
+export class MusicSearchProvider { constructor({onActivate(item)}); register(); unregister(); }
+// libraryView.js (owner: ui-library job)
+LibraryView.prototype.setFooter(actor | null);   // the player bar slot under the tabs + grid
+```
+
+`app.js` (owner: ui-library job) creates one `Player` for the whole extension,
+builds a `PlayerBar` into every `LibraryView` footer (when `player-bar` is on),
+registers `MusicSearchProvider`, and opens `openItemMenu` from a tile's
+right-click and a row's `•••`.
