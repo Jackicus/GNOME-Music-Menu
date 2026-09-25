@@ -35,8 +35,12 @@ Nothing else in `src/lib/` shells out or opens a socket — keep it that way,
 the shell process must never block on network or Chrome.
 
 `player.js` follows the engine's own MPRIS player (matched by PID from
-`engine.json` in `$XDG_RUNTIME_DIR/music-menu/`), and reckons playback
-position locally between corrections since MPRIS doesn't stream it.
+`engine.json` in `$XDG_RUNTIME_DIR/music-menu/`) for play/pause and the
+track, but not for time: Chrome's MPRIS position and length are its media
+element's, which Apple's gapless player runs across several tracks. The
+track's own come from `am.py now-playing` (MusicKit), asked at each track
+change, play, pause and `Seeked`, and every half minute while playing; the
+position is reckoned off the monotonic clock in between.
 `library.js` only reads `library.json`; `am.py sync` is the only writer.
 `shelfView.js` builds Listen Now shelves as one-row instances of the same
 grid view the tabs use, so they page and focus like everything else.

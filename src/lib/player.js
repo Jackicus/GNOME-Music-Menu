@@ -10,15 +10,19 @@
 // into $XDG_RUNTIME_DIR/music-menu/engine.json — or, failing that, by its
 // metadata naming music.apple.com.
 //
-// MPRIS announces play, pause and a track change, but not a running position,
-// so the position is reckoned off the monotonic clock between corrections: a
-// pause, a seek, a track change, and a read of Position at each. Chrome's
-// MPRIS has no Shuffle or LoopStatus, so those, the catalog id and Apple's
-// own cover art come from am.py's `now-playing` — once per track change, and
-// every half minute while playing, when the reckoned position is checked
-// against the player's own too — and shuffle and repeat are set through
-// am.py alone. The poll never starts an engine: a player on the bus means
-// one is running.
+// MPRIS is believed about play, pause and which track, and used for the
+// transport. It is not believed about time. Chrome reports the position and
+// length of its media element, and Apple's gapless player runs one element
+// across track after track, so a three-minute song arrives as the eighth
+// minute of a thirteen-minute one. The track's own position and length come
+// from am.py's `now-playing` — MusicKit's reckoning — asked once per track
+// change, once per play or pause, once per `Seeked` the engine sends on its
+// own, and every half minute while playing to check the clock; between
+// answers the position runs off the monotonic clock. Shuffle, repeat, the
+// catalog id and Apple's own cover art ride along with each answer. Only
+// when the engine does not answer — the player is somebody else's, or it is
+// down — do the player's own numbers stand in. The poll never starts an
+// engine: a player on the bus means one is running.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -53,9 +57,12 @@ const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_PATH = '/org/mpris/MediaPlayer2';
 const NO_TRACK = '/org/mpris/MediaPlayer2/TrackList/NoTrack';
 const POLL_INTERVAL_US = 30 * 1000 * 1000;
-// The reckoned position is left alone unless the poll finds it this far out:
-// the poll's own answer is a spawn and a round trip old.
+// The reckoned position is left alone unless the engine's answer is this
+// far out: MusicKit counts whole seconds, and the answer is a spawn and a
+// round trip old.
 const DRIFT_US = 2 * 1000 * 1000;
+// An answer asked for this soon after our own seek may predate it.
+const SEEK_GRACE_US = 2 * 1000 * 1000;
 
 // am.py and MPRIS name the modes differently; one vocabulary here.
 const REPEAT = {none: 'none', off: 'none', one: 'one', track: 'one', all: 'all', playlist: 'all'};
@@ -103,7 +110,9 @@ export class Player extends Signals.EventEmitter {
         this._considering = new Set();
         this._timer = 0;
         this._polling = false;
+        this._pollAgain = false;
         this._polledAt = 0;
+        this._seekAt = 0;
         this._reset();
 
         this._dbus = new DBusProxy(Gio.DBus.session, 'org.freedesktop.DBus', '/org/freedesktop/DBus',
@@ -131,7 +140,7 @@ export class Player extends Signals.EventEmitter {
             status: this._status,
             track: track && {
                 title: track.title, artist: track.artist, album: track.album, artUrl: track.artUrl,
-                lengthUs: track.lengthUs, catalogId: track.catalogId, id: track.id,
+                lengthUs: this._lengthUs, catalogId: track.catalogId, id: track.id,
             },
             positionUs: this._position(),
             // The engine can always skip and seek through am.py, whatever
@@ -178,10 +187,7 @@ export class Player extends Signals.EventEmitter {
                 if (!proxy.g_name_owner)
                     this._detach();
             }, this);
-        this._seekedId = proxy.connectSignal('Seeked', (_proxy, _sender, [positionUs]) => {
-            this._correct(positionUs);
-            this._emit();
-        });
+        this._seekedId = proxy.connectSignal('Seeked', (_proxy, _sender, [positionUs]) => this._onSeeked(positionUs));
         this._apply(cachedProperties(proxy));
     }
 
@@ -200,7 +206,12 @@ export class Player extends Signals.EventEmitter {
     _reset() {
         this._status = 'Stopped';
         this._track = null;
+        // Where the length and position come from: null while the engine
+        // is being asked about the track, 'engine' once it has answered,
+        // 'mpris' when it did not and the player's own numbers stand in.
+        this._source = null;
         this._lengthUs = 0;
+        this._mprisLengthUs = 0;
         this._rate = 1;
         this._shuffle = false;
         this._repeat = 'none';
@@ -222,7 +233,10 @@ export class Player extends Signals.EventEmitter {
 
         if ('Metadata' in props) {
             const parsed = parseMprisMetadata(props.Metadata);
-            const key = t => t && [t.title, t.artist, t.album, t.lengthUs, t.trackId].join('\n');
+            // Not the length: Chrome's grows mid-track as the next one is
+            // buffered behind this one.
+            const key = t => t && [t.title, t.artist, t.album, t.trackId].join('\n');
+            this._mprisLengthUs = parsed?.lengthUs ?? 0;
             if (key(parsed) !== key(this._track)) {
                 trackChanged = changed = true;
                 this._track = parsed && {
@@ -232,8 +246,14 @@ export class Player extends Signals.EventEmitter {
                     artUrl: /\/\.com\.google\.Chrome\./.test(parsed.artUrl ?? '') ? null : parsed.artUrl,
                     id: parsed.catalogId ?? parsed.trackId ?? null,
                 };
-                this._lengthUs = parsed?.lengthUs ?? 0;
+                // The length waits for the engine's answer rather than
+                // showing Chrome's for the moment it takes.
+                this._source = null;
+                this._lengthUs = 0;
                 this._correct(0);
+            } else if (this._source === 'mpris' && this._lengthUs !== this._mprisLengthUs) {
+                this._lengthUs = this._mprisLengthUs;
+                changed = true;
             }
         }
 
@@ -250,11 +270,6 @@ export class Player extends Signals.EventEmitter {
             }
         }
 
-        if ('Position' in props)
-            this._correct(props.Position);
-        else if ((trackChanged || statusChanged) && this._status !== 'Stopped')
-            this._readPosition();
-
         if ('Shuffle' in props)
             changed = this._setModes(shuffleOf(props.Shuffle), this._repeat) || changed;
         if ('LoopStatus' in props)
@@ -262,11 +277,35 @@ export class Player extends Signals.EventEmitter {
 
         if (changed)
             this._emit();
+
+        // Position is never signalled; a new track or a play or pause is
+        // the moment to ask for it.
         if (trackChanged)
+            this._poll();
+        else if (statusChanged && this._status !== 'Stopped')
+            this._refreshPosition();
+    }
+
+    // The engine's `Seeked` carries its element's time, not the track's: it
+    // says only that something moved, so the engine is asked — unless the
+    // move was ours, which the seek already accounted for.
+    _onSeeked(positionUs) {
+        if (this._source === 'mpris') {
+            this._correct(positionUs);
+            this._emit();
+        } else if (GLib.get_monotonic_time() >= this._seekAt + SEEK_GRACE_US) {
+            this._poll();
+        }
+    }
+
+    _refreshPosition() {
+        if (this._source === 'mpris')
+            this._readPosition();
+        else
             this._poll();
     }
 
-    // Position is never signalled, so it is asked for outright.
+    // Another player's Position, asked for outright.
     _readPosition() {
         const proxy = this._proxy;
         proxy?.call('org.freedesktop.DBus.Properties.Get',
@@ -274,7 +313,7 @@ export class Player extends Signals.EventEmitter {
             Gio.DBusCallFlags.NONE, -1, this._cancellable, (_proxy, res) => {
                 try {
                     const [positionUs] = proxy.call_finish(res).recursiveUnpack();
-                    if (this._proxy !== proxy)
+                    if (this._proxy !== proxy || this._source !== 'mpris')
                         return;
                     this._correct(positionUs);
                     this.emit('position', this._position());
@@ -285,27 +324,50 @@ export class Player extends Signals.EventEmitter {
     }
 
     // ------------------------------------------------------------------
-    // What am.py says: shuffle, repeat, the catalog id and Apple's cover
+    // What am.py says: the track's length and position, shuffle, repeat,
+    // the catalog id and Apple's cover
     // ------------------------------------------------------------------
     async _poll() {
-        if (this._polling || this._destroyed)
+        if (this._destroyed)
             return;
-        this._polling = true;
-        this._polledAt = GLib.get_monotonic_time();
-        try {
-            const res = await amctl.run(['--no-start', 'now-playing'], {cancellable: this._cancellable});
-            if (!this._destroyed)
-                this._applyNowPlaying(res);
-        } catch {
-            // The engine is down, or we are.
-        } finally {
-            this._polling = false;
+        // One at a time; a request during a poll means one more after it,
+        // since the answer under way may predate what prompted the request.
+        if (this._polling) {
+            this._pollAgain = true;
+            return;
         }
+        this._polling = true;
+        do {
+            this._pollAgain = false;
+            const askedAt = this._polledAt = GLib.get_monotonic_time();
+            try {
+                const res = await amctl.run(['--no-start', 'now-playing'], {cancellable: this._cancellable});
+                if (!this._destroyed)
+                    this._applyNowPlaying(res, askedAt);
+            } catch {
+                // The engine is down, or this player is not its: its own
+                // numbers will have to do.
+                if (!this._destroyed && this._source === null)
+                    this._adoptMpris();
+            }
+        } while (this._pollAgain && !this._destroyed);
+        this._polling = false;
     }
 
-    _applyNowPlaying(res) {
+    _applyNowPlaying(res, askedAt) {
         let changed = this._setModes(shuffleOf(res.shuffle), repeatOf(res.repeat));
-        const track = res.track;
+        // Answered after the player left the bus: nothing to fill in.
+        const track = this._proxy ? res.track : null;
+        if (track && !this._track && res.state !== 'stopped') {
+            // MPRIS said Playing but nothing yet about Metadata (seen right
+            // after a track change): the answer fills the track in.
+            this._track = {
+                title: track.title ?? '', artist: track.artist ?? '', album: track.album ?? '',
+                artUrl: track.artUrl ?? null, catalogId: track.catalogId ?? null,
+                id: track.id ?? track.catalogId ?? null, trackId: null,
+            };
+            changed = true;
+        }
         if (track && this._track) {
             for (const field of ['id', 'catalogId', 'artUrl']) {
                 if (track[field] && this._track[field] !== track[field]) {
@@ -313,31 +375,37 @@ export class Player extends Signals.EventEmitter {
                     changed = true;
                 }
             }
-            // The clock and the player drift apart over a long track; the
-            // poll is the one reading of the player's own position there is.
-            if (res.state === 'playing' && this._status === 'Playing') {
-                const positionUs = Math.round((Number(res.position) || 0) * 1e6);
-                if (Math.abs(positionUs - this._position()) > DRIFT_US) {
-                    this._correct(positionUs);
-                    changed = true;
-                }
+            const lengthUs = track.durationMs > 0
+                ? Math.round(track.durationMs * 1000)
+                : Math.round((Number(res.duration) || 0) * 1e6);
+            if (lengthUs > 0 && lengthUs !== this._lengthUs) {
+                this._lengthUs = lengthUs;
+                changed = true;
             }
-        } else if (track && !this._track && res.state !== 'stopped') {
-            // MPRIS said Playing but nothing yet about Metadata (seen right
-            // after a track change): filled in from the poll, position too,
-            // so the scrubber does not start from wherever it last was.
-            const lengthUs = Math.round((Number(track.durationMs) || 0) * 1000);
-            this._track = {
-                title: track.title ?? '', artist: track.artist ?? '', album: track.album ?? '',
-                artUrl: track.artUrl ?? null, lengthUs, catalogId: track.catalogId ?? null,
-                id: track.id ?? track.catalogId ?? null, trackId: null,
-            };
-            this._lengthUs = lengthUs;
-            this._correct(Math.round((Number(res.position) || 0) * 1e6));
-            changed = true;
+            // The first answer for a track is taken as it is; later ones
+            // only when the clock has drifted from it. An answer asked for
+            // around our own seek is not, whichever side of it it fell.
+            let positionUs = Math.round((Number(res.position) || 0) * 1e6);
+            if (res.state === 'playing')
+                positionUs += (GLib.get_monotonic_time() - askedAt) * this._rate;
+            const nearOurSeek = askedAt < this._seekAt + SEEK_GRACE_US;
+            if (!nearOurSeek && (this._source !== 'engine' || Math.abs(positionUs - this._position()) > DRIFT_US)) {
+                this._correct(positionUs);
+                changed = true;
+            }
+            this._source = 'engine';
         }
         if (changed)
             this._emit();
+    }
+
+    _adoptMpris() {
+        this._source = 'mpris';
+        if (this._lengthUs !== this._mprisLengthUs) {
+            this._lengthUs = this._mprisLengthUs;
+            this._emit();
+        }
+        this._readPosition();
     }
 
     _setModes(shuffle, repeat) {
@@ -393,7 +461,8 @@ export class Player extends Signals.EventEmitter {
 
     // ------------------------------------------------------------------
     // Transport: MPRIS when a player is attached, am.py otherwise or when
-    // MPRIS refuses; shuffle and repeat are am.py's alone.
+    // MPRIS refuses. Seeks go to MusicKit, which counts in the track's own
+    // time; shuffle and repeat are am.py's alone.
     // ------------------------------------------------------------------
     playPause() {
         return this._transport('PlayPause', 'toggle');
@@ -423,10 +492,13 @@ export class Player extends Signals.EventEmitter {
         const targetUs = Math.max(0, Math.round(positionUs));
         const offsetUs = targetUs - this._position();
         // Reckoned from here at once, so the scrubber lands where it was let go.
+        this._seekAt = GLib.get_monotonic_time();
         this._correct(targetUs);
         this._emit();
+        // Only another player is seeked over MPRIS: the engine's SetPosition
+        // would move Chrome's element, whose time is not the track's.
         const proxy = this._proxy;
-        if (proxy) {
+        if (proxy && this._source === 'mpris') {
             try {
                 const trackId = this._track?.trackId;
                 if (trackId?.startsWith('/') && trackId !== NO_TRACK)
@@ -438,7 +510,7 @@ export class Player extends Signals.EventEmitter {
                 // Refused, or the track id is no object path: am.py below.
             }
         }
-        await this._run('seek', String(Math.round(targetUs / 1e6)));
+        await this._run('seek', (targetUs / 1e6).toFixed(3));
     }
 
     async toggleShuffle() {
