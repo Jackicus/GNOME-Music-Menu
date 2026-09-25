@@ -1,312 +1,1626 @@
 #!/usr/bin/env python3
-"""A made-up library for screenshots: `demo_library.py CACHE_HOME`.
+"""A made-up Apple Music library for demo and screenshots: `demo_library.py [--out-dir CACHE]`.
 
-Writes CACHE_HOME/music-menu/ exactly as the scanner would —
-library.json, with posters and backdrops in its own posters/ and backdrops/
-folders at the cache's own caps — but for shows and films that do not
-exist, with artwork drawn here. The README's screenshots are of this rather
-than of anyone's real library: nobody's collection goes into a public repo,
-and nobody's artwork either.
-
-`nested.sh start --demo` runs it and points the nested session's
-XDG_CACHE_HOME at the result, so the extension reads it and nothing else.
-The file paths inside are under /demo and are never opened.
+Generates a realistic library.json and 512x512 artwork in the exact AGENTS.md schema.
+Uses only Python stdlib and PyGObject / Cairo (no pip dependencies).
 """
+import argparse
+import hashlib
+import io
 import json
 import math
 import os
 import random
 import sys
-import time
 
-try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
-except ImportError:
-    sys.exit("demo_library.py needs Pillow (python-pillow).")
+import cairo
+import gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
 
-# The cache's own caps (backend/metadata.py POSTER_BOX, BACKDROP_BOX).
-POSTER = (512, 768)
-BACKDROP = (960, 540)
-FONT = "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf"
+# ---------------------------------------------------------------------------
+# Visual styling and palettes
+# ---------------------------------------------------------------------------
 
-# (title, year, rating, genres, palette, motif, summary)
-SHOWS = [
-    ("Harbour Lights", 2021, 8.4, ["Drama", "Mystery"], ("#0b2545", "#f4a259"), "sun",
-     "A harbour pilot starts to notice that the ships she guides in are not always the ships that left."),
-    ("The Northern Line", 2019, 7.9, ["Comedy", "Drama"], ("#1b1b3a", "#e84855"), "stripes",
-     "Six strangers share the last train home every night, and slowly stop being strangers."),
-    ("Paper Satellites", 2023, 8.1, ["Sci-Fi & Fantasy"], ("#10002b", "#7b2cbf"), "rings",
-     "A school science club launches a cardboard probe and gets an answer back."),
-    ("Saltmarsh", 2018, 7.6, ["Crime", "Drama"], ("#1d3b2a", "#a7c957"), "peaks",
-     "A detective returns to the fen village she swore she would never see again."),
-    ("Night Shift", 2020, 7.2, ["Drama"], ("#03045e", "#00b4d8"), "grid",
-     "Life, death and bad coffee on the overnight ward of a city hospital."),
-    ("Glasshouse", 2022, 8.7, ["Mystery", "Sci-Fi & Fantasy"], ("#073b3a", "#0b6e4f"), "moon",
-     "Everyone in the botanical dome is keeping a secret, and the plants are listening."),
-    ("The Cartographers", 2017, 8.0, ["Adventure", "Drama"], ("#3d2c2e", "#e0a458"), "peaks",
-     "Two rival mapmakers are hired to chart the same island, from opposite ends."),
-    ("Low Tide", 2024, 7.8, ["Drama"], ("#14213d", "#fca311"), "sun",
-     "When the sea goes out further than it ever has, a coastal town finds what it buried."),
-    ("Signal & Noise", 2021, 8.2, ["Sci-Fi & Fantasy", "Mystery"], ("#212529", "#ff006e"), "stripes",
-     "A radio astronomer hears a pattern in the static that only she can decode."),
-    ("Hollow Pines", 2016, 7.4, ["Mystery"], ("#132a13", "#90a955"), "peaks",
-     "A summer camp reopens thirty years after the season nobody talks about."),
-    ("Afterglow", 2023, 8.5, ["Animation", "Drama"], ("#240046", "#ff9e00"), "sun",
-     "A lighthouse keeper's daughter paints the sunsets that keep a whole town going."),
-    ("Copper Coast", 2020, 7.7, ["Comedy"], ("#2b2d42", "#ef8354"), "grid",
-     "The worst hotel on the coast gets a new manager who is determined to make it the second worst."),
-    ("The Long Winter", 2015, 8.3, ["Drama", "History"], ("#0d1b2a", "#e0e1dd"), "moon",
-     "An Arctic research station is cut off for a season, and the season keeps getting longer."),
-    ("Static Bloom", 2025, 7.9, ["Animation", "Sci-Fi & Fantasy"], ("#1a1423", "#b8f2e6"), "rings",
-     "In a city run on radio, a girl who can hear flowers grow joins the repair crew."),
+PALETTES = [
+    ("#0d1b2a", "#1b4965", "#62b6cb"),  # Deep ocean
+    ("#10002b", "#5a189a", "#e0aaff"),  # Violet nebula
+    ("#1f2421", "#499f68", "#dce2aa"),  # Sage forest
+    ("#2b0914", "#d90429", "#ffb4a2"),  # Crimson velvet
+    ("#0a1128", "#0077b6", "#90e0ef"),  # Electric ice
+    ("#1c1917", "#d97706", "#fef3c7"),  # Amber glow
+    ("#240046", "#9d4edd", "#ff9e00"),  # Synthwave dusk
+    ("#002830", "#0081a7", "#fdfcdc"),  # Nordic fjord
+    ("#1a1423", "#5c3d75", "#eac435"),  # Midnight & gold
+    ("#14213d", "#fca311", "#e5e5e5"),  # Navy & marigold
+    ("#1b263b", "#e76f51", "#f4a261"),  # Sunset terrace
+    ("#073b3a", "#0b6e4f", "#80ed99"),  # Emerald canopy
+    ("#2e1f27", "#854d27", "#dd722a"),  # Terracotta autumn
+    ("#212529", "#495057", "#f8f9fa"),  # Monochrome minimal
+    ("#132a13", "#31572c", "#90a955"),  # Olive ridge
+    ("#2b2d42", "#8d99ae", "#ef233c"),  # Slate & scarlet
+    ("#180018", "#7209b7", "#4cc9f0"),  # Cyber violet
+    ("#2c1b18", "#a75d5d", "#ffc3a0"),  # Dusty rose & coffee
+    ("#0b132b", "#1c2541", "#5bc0be"),  # Midnight teal
+    ("#1e1e24", "#444140", "#e54b4b"),  # Charcoal & coral
+    ("#023047", "#219ebc", "#ffb703"),  # Mediterranean harbor
+    ("#2b1e3a", "#a23b72", "#f18f01"),  # Twilight plum
+    ("#1a202c", "#4a5568", "#a0aec0"),  # Modern slate
+    ("#1d3557", "#457b9d", "#a8dadc"),  # Atlantic blues
+    ("#3d0c11", "#d1495b", "#edae49"),  # Rich garnet
 ]
 
-FILMS = [
-    ("Midnight Orchard", 2022, 7.8, ["Drama", "Romance"], ("#1b263b", "#e76f51"), "moon", 112,
-     "Some harvests happen after dark.",
-     "Two estranged sisters return to their late father's orchard to pick one last crop."),
-    ("The Last Ferry", 2019, 7.1, ["Thriller"], ("#0b132b", "#5bc0be"), "stripes", 98,
-     "Nine passengers. One crossing. No way back.",
-     "A late-night crossing becomes a locked-room mystery when the captain disappears."),
-    ("Wildfire Season", 2024, 7.6, ["Action", "Drama"], ("#370617", "#f48c06"), "peaks", 126,
-     "Hold the line.",
-     "A crew of smokejumpers races a fire that seems to know where they are going."),
-    ("Parallel Lines", 2021, 8.0, ["Sci-Fi & Fantasy"], ("#0f0e17", "#ff8906"), "stripes", 118,
-     "Every choice runs on its own track.",
-     "A signal engineer finds a junction that switches between the lives she did not lead."),
-    ("Quiet Machines", 2023, 7.4, ["Sci-Fi & Fantasy", "Drama"], ("#212529", "#4cc9f0"), "grid", 104,
-     "They were built to listen.",
-     "A repair robot on a deserted station starts keeping the diary its owners stopped writing."),
-    ("Salt & Silver", 2018, 6.9, ["Adventure"], ("#003049", "#eae2b7"), "rings", 131,
-     "Fortune favours the tide.",
-     "A salvage diver and a forger chase a sunken fortune that someone keeps moving."),
-    ("The Lantern Room", 2020, 7.9, ["Mystery", "Drama"], ("#231942", "#f9c74f"), "sun", 109,
-     "The light has been left on for forty years.",
-     "An archivist inherits a lighthouse and the letters its last keeper never sent."),
-    ("Echo Valley", 2017, 7.3, ["Thriller", "Mystery"], ("#081c15", "#74c69d"), "peaks", 101,
-     "Some voices answer back.",
-     "Hikers in a remote valley hear their own voices call out before they have spoken."),
-    ("Northbound", 2025, 8.2, ["Adventure", "Drama"], ("#0d1b2a", "#90e0ef"), "moon", 137,
-     "Two thousand miles. One old truck.",
-     "A retired long-haul driver takes her grandson on the route she drove for thirty years."),
-]
-
-EPISODE_WORDS = [
-    "Arrival", "The Crossing", "Undertow", "First Light", "Old Friends", "The Map Room",
-    "Static", "Harvest", "The Long Night", "Beacon", "Driftwood", "Echoes", "The Visitor",
-    "Low Water", "Homecoming", "Paper Trail", "Nightfall", "The Signal", "Fault Lines",
-    "Open Water", "The Archive", "Last Orders", "Thaw", "Northern Lights",
+MOTIFS = [
+    "sun_horizon",
+    "concentric_rings",
+    "geometric_facets",
+    "soundwave_bars",
+    "minimalist_arch",
+    "retro_grid",
+    "mountain_peaks",
+    "halftone_matrix",
+    "diagonal_stripes",
+    "organic_blobs",
 ]
 
 
-def rgb(hex_colour):
-    h = hex_colour.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+def hex_to_rgb(hex_code):
+    """Convert hex string '#rrggbb' to (r, g, b) float tuple in 0..1."""
+    h = hex_code.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
-def mix(a, b, t):
-    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def mix_rgb(c1, c2, t):
+    """Linearly interpolate between two RGB float tuples."""
+    return tuple(c1[i] + (c2[i] - c1[i]) * t for i in range(3))
 
 
-def gradient(size, top, bottom):
-    w, h = size
-    img = Image.new("RGB", size)
-    draw = ImageDraw.Draw(img)
-    for y in range(h):
-        draw.line([(0, y), (w, y)], fill=mix(top, bottom, y / max(1, h - 1)))
-    return img
-
-
-def motif(img, kind, dark, light, seed):
-    """The picture on the poster: a shape or two in the palette, soft-edged."""
-    w, h = img.size
-    rnd = random.Random(seed)
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    glow = light + (235,)
-    faint = mix(dark, light, 0.35) + (150,)
-    if kind == "sun":
-        r = w * 0.32
-        cx, cy = w * 0.5, h * 0.42
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=glow)
-        for i in range(6):
-            y = cy + r * 0.2 + i * r * 0.22
-            d.rectangle([0, y, w, y + r * 0.08], fill=dark + (255,))
-    elif kind == "rings":
-        cx, cy = w * 0.5, h * 0.4
-        for i in range(9, 0, -1):
-            r = w * 0.06 * i
-            d.ellipse([cx - r, cy - r, cx + r, cy + r],
-                      outline=mix(dark, light, i / 9) + (255,), width=max(3, w // 90))
-    elif kind == "peaks":
-        base = h * 0.72
-        for i in range(4):
-            x = rnd.uniform(-0.2, 0.9) * w
-            peak = rnd.uniform(0.25, 0.5) * h
-            width = rnd.uniform(0.5, 0.9) * w
-            colour = mix(dark, light, 0.25 + i * 0.18) + (255,)
-            d.polygon([(x, base), (x + width / 2, peak), (x + width, base)], fill=colour)
-        d.rectangle([0, base, w, h], fill=dark + (255,))
-        d.ellipse([w * 0.66, h * 0.12, w * 0.8, h * 0.12 + w * 0.14], fill=glow)
-    elif kind == "stripes":
-        step = w // 7
-        for i in range(-8, 16):
-            x = i * step
-            colour = (glow if i % 3 == 0 else faint)
-            d.polygon([(x, 0), (x + step * 0.45, 0), (x + step * 0.45 - h * 0.6, h), (x - h * 0.6, h)], fill=colour)
-    elif kind == "moon":
-        r = w * 0.26
-        cx, cy = w * 0.55, h * 0.33
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=glow)
-        # Drawing replaces rather than blends, so a clear disc cuts the crescent.
-        d.ellipse([cx - r * 0.55, cy - r * 1.05, cx + r * 1.35, cy + r * 0.85], fill=(0, 0, 0, 0))
-        for _ in range(60):
-            x, y = rnd.uniform(0, w), rnd.uniform(0, h * 0.7)
-            s = rnd.uniform(1, 3)
-            d.ellipse([x, y, x + s, y + s], fill=light + (200,))
-    elif kind == "grid":
-        gap = w / 9
-        for gx in range(10):
-            for gy in range(12):
-                x, y = gx * gap, gy * gap
-                dist = math.hypot(x - w * 0.5, y - h * 0.4) / w
-                s = max(2, gap * 0.45 * (1 - dist))
-                d.ellipse([x - s / 2, y - s / 2, x + s / 2, y + s / 2], fill=mix(dark, light, 1 - dist) + (255,))
-    img.paste(layer, (0, 0), layer)
-    return img
-
-
-def fonts(size):
-    try:
-        face = ImageFont.truetype(FONT, size)
-        try:
-            face.set_variation_by_name("Black")
-        except Exception:
-            pass
-        return face
-    except OSError:
-        return ImageFont.load_default(size)
-
-
-def wrap(draw, text, face, width):
-    words, lines, line = text.upper().split(), [], ""
+def wrap_text(ctx, text, max_width, font_size):
+    """Wrap text to fit within max_width using Cairo text extents."""
+    ctx.set_font_size(font_size)
+    words = text.split()
+    lines = []
+    current_line = []
     for word in words:
-        trial = f"{line} {word}".strip()
-        if draw.textlength(trial, font=face) <= width or not line:
-            line = trial
+        trial = " ".join(current_line + [word])
+        extents = ctx.text_extents(trial)
+        if extents.width <= max_width or not current_line:
+            current_line.append(word)
         else:
-            lines.append(line)
-            line = word
-    lines.append(line)
+            lines.append(" ".join(current_line))
+            current_line = [word]
+    if current_line:
+        lines.append(" ".join(current_line))
     return lines
 
 
-def poster(path, title, year, palette, kind, seed):
-    dark, light = rgb(palette[0]), rgb(palette[1])
-    img = gradient(POSTER, dark, mix(dark, light, 0.35))
-    img = motif(img, kind, dark, light, seed)
-    # A darker foot for the title to stand on.
-    foot = gradient((POSTER[0], POSTER[1] // 3), dark, mix(dark, (0, 0, 0), 0.5))
-    mask = gradient((POSTER[0], POSTER[1] // 3), (0, 0, 0), (255, 255, 255)).convert("L")
-    img.paste(foot, (0, POSTER[1] - POSTER[1] // 3), mask)
-    draw = ImageDraw.Draw(img)
-    # As large as the longest word allows.
-    width = POSTER[0] - 64
-    size = 58
-    face = fonts(size)
-    while size > 30 and max(draw.textlength(w, font=face) for w in title.upper().split()) > width:
-        size -= 4
-        face = fonts(size)
-    lines = wrap(draw, title, face, width)
-    step = round(size * 1.1)
-    y = POSTER[1] - 70 - step * len(lines)
-    for line in lines:
-        x = (POSTER[0] - draw.textlength(line, font=face)) / 2
-        draw.text((x, y), line, font=face, fill=(250, 250, 251))
-        y += step
-    small = fonts(24)
-    label = str(year)
-    draw.text(((POSTER[0] - draw.textlength(label, font=small)) / 2, POSTER[1] - 52),
-              label, font=small, fill=mix(light, (250, 250, 251), 0.5))
-    img.save(path, "JPEG", quality=88)
+def draw_cover(out_path, title, subtitle, badge, palette, motif, is_artist=False):
+    """Draw a 512x512 square artwork with Cairo and save as JPEG via GdkPixbuf."""
+    dark_rgb = hex_to_rgb(palette[0])
+    mid_rgb = hex_to_rgb(palette[1])
+    light_rgb = hex_to_rgb(palette[2])
+
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 512, 512)
+    ctx = cairo.Context(surf)
+
+    # 1. Base gradient
+    bg = cairo.LinearGradient(0, 0, 512, 512)
+    bg.add_color_stop_rgb(0.0, *dark_rgb)
+    bg.add_color_stop_rgb(1.0, *mid_rgb)
+    ctx.set_source(bg)
+    ctx.paint()
+
+    # 2. Geometric motif
+    if is_artist:
+        # Distinctive artist portrait framing
+        ctx.arc(256, 185, 115, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.25)
+        ctx.fill()
+
+        ctx.set_line_width(3.0)
+        ctx.arc(256, 185, 125, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.8)
+        ctx.stroke()
+
+        # Inner stylized silhouette
+        ctx.arc(256, 160, 45, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.9)
+        ctx.fill()
+
+        ctx.arc(256, 260, 75, math.pi, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.75)
+        ctx.fill()
+
+    elif motif == "sun_horizon":
+        # Sun disc
+        ctx.arc(256, 195, 105, 0, 2 * math.pi)
+        ctx.set_source_rgb(*light_rgb)
+        ctx.fill()
+        # Horizontal blinds
+        ctx.set_source_rgb(*dark_rgb)
+        for i in range(5):
+            ctx.rectangle(90, 205 + i * 18, 332, 8)
+            ctx.fill()
+
+    elif motif == "concentric_rings":
+        ctx.set_line_width(2.5)
+        for r in range(40, 220, 32):
+            ctx.arc(256, 195, r, 0, 2 * math.pi)
+            ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.35)
+            ctx.stroke()
+        ctx.arc(360, 140, 16, 0, 2 * math.pi)
+        ctx.set_source_rgb(*light_rgb)
+        ctx.fill()
+
+    elif motif == "geometric_facets":
+        ctx.move_to(80, 280)
+        ctx.line_to(256, 70)
+        ctx.line_to(432, 280)
+        ctx.close_path()
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.45)
+        ctx.fill()
+
+        ctx.move_to(160, 280)
+        ctx.line_to(320, 100)
+        ctx.line_to(400, 280)
+        ctx.close_path()
+        ctx.set_source_rgba(mid_rgb[0], mid_rgb[1], mid_rgb[2], 0.7)
+        ctx.fill()
+
+    elif motif == "soundwave_bars":
+        for i in range(16):
+            h = 35 + math.sin(i * 0.45) * 85 + (i % 3) * 22
+            x = 76 + i * 23
+            ctx.rectangle(x, 200 - h / 2, 14, h)
+            ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.75)
+            ctx.fill()
+
+    elif motif == "minimalist_arch":
+        ctx.arc(256, 155, 95, math.pi, 0)
+        ctx.line_to(351, 290)
+        ctx.line_to(161, 290)
+        ctx.close_path()
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.55)
+        ctx.fill()
+
+        ctx.arc(256, 175, 60, math.pi, 0)
+        ctx.line_to(316, 290)
+        ctx.line_to(196, 290)
+        ctx.close_path()
+        ctx.set_source_rgba(dark_rgb[0], dark_rgb[1], dark_rgb[2], 0.8)
+        ctx.fill()
+
+    elif motif == "retro_grid":
+        ctx.arc(256, 140, 65, 0, 2 * math.pi)
+        ctx.set_source_rgb(*light_rgb)
+        ctx.fill()
+
+        ctx.set_line_width(1.5)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.45)
+        for x in range(40, 490, 45):
+            ctx.move_to(256, 170)
+            ctx.line_to(x, 310)
+            ctx.stroke()
+        for y in [185, 210, 245, 290]:
+            ctx.move_to(50, y)
+            ctx.line_to(462, y)
+            ctx.stroke()
+
+    elif motif == "mountain_peaks":
+        ctx.move_to(40, 310)
+        ctx.line_to(190, 130)
+        ctx.line_to(340, 310)
+        ctx.close_path()
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.5)
+        ctx.fill()
+
+        ctx.move_to(180, 310)
+        ctx.line_to(330, 150)
+        ctx.line_to(480, 310)
+        ctx.close_path()
+        ctx.set_source_rgba(mid_rgb[0], mid_rgb[1], mid_rgb[2], 0.85)
+        ctx.fill()
+
+        ctx.arc(390, 95, 25, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.9)
+        ctx.fill()
+
+    elif motif == "halftone_matrix":
+        for gx in range(11):
+            for gy in range(8):
+                x = 66 + gx * 38
+                y = 70 + gy * 30
+                dist = math.hypot(x - 256, y - 175) / 200
+                rad = max(2, 13 * (1 - min(1, dist)))
+                ctx.arc(x, y, rad, 0, 2 * math.pi)
+                ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.7 * (1 - dist * 0.5))
+                ctx.fill()
+
+    elif motif == "diagonal_stripes":
+        ctx.set_line_width(20)
+        for i in range(-4, 12):
+            ctx.move_to(i * 55, 0)
+            ctx.line_to(i * 55 + 200, 320)
+            ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.35 if i % 2 == 0 else 0.15)
+            ctx.stroke()
+
+    elif motif == "organic_blobs":
+        ctx.arc(200, 175, 95, 0, 2 * math.pi)
+        ctx.set_source_rgba(light_rgb[0], light_rgb[1], light_rgb[2], 0.4)
+        ctx.fill()
+
+        ctx.arc(310, 205, 85, 0, 2 * math.pi)
+        ctx.set_source_rgba(mid_rgb[0], mid_rgb[1], mid_rgb[2], 0.65)
+        ctx.fill()
+
+    # 3. Readability scrim across bottom area
+    scrim = cairo.LinearGradient(0, 250, 0, 512)
+    scrim.add_color_stop_rgba(0.0, 0, 0, 0, 0.0)
+    scrim.add_color_stop_rgba(0.4, 0, 0, 0, 0.45)
+    scrim.add_color_stop_rgba(1.0, 0, 0, 0, 0.88)
+    ctx.set_source(scrim)
+    ctx.rectangle(0, 250, 512, 262)
+    ctx.fill()
+
+    # 4. Typography
+    ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+
+    # Compute optimal font size for title
+    title_upper = title.upper()
+    font_size = 32
+    lines = wrap_text(ctx, title_upper, 440, font_size)
+    if len(lines) > 2:
+        font_size = 26
+        lines = wrap_text(ctx, title_upper, 440, font_size)
+
+    line_step = round(font_size * 1.15)
+    y_start = 450 - (len(lines) - 1) * line_step - (28 if subtitle else 0)
+
+    # Draw title
+    ctx.set_font_size(font_size)
+    ctx.set_source_rgba(1.0, 1.0, 1.0, 0.98)
+    for idx, line in enumerate(lines):
+        ctx.move_to(36, y_start + idx * line_step)
+        ctx.show_text(line)
+
+    # Draw subtitle / artist
+    if subtitle:
+        sub_y = y_start + len(lines) * line_step + 4
+        ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        ctx.set_font_size(20)
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.78)
+        ctx.move_to(36, sub_y)
+        ctx.show_text(subtitle)
+
+    # Draw badge / year in upper right
+    if badge:
+        ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        ctx.set_font_size(14)
+        ext = ctx.text_extents(badge)
+        bx = 512 - 36 - ext.width - 16
+        by = 36
+        ctx.rectangle(bx, by, ext.width + 16, 26)
+        ctx.set_source_rgba(0, 0, 0, 0.45)
+        ctx.fill()
+
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85)
+        ctx.move_to(bx + 8, by + 18)
+        ctx.show_text(badge)
+
+    # 5. Convert to JPEG via GdkPixbuf
+    buf = io.BytesIO()
+    surf.write_to_png(buf)
+    png_bytes = buf.getvalue()
+
+    loader = GdkPixbuf.PixbufLoader()
+    loader.write(png_bytes)
+    loader.close()
+    pixbuf = loader.get_pixbuf()
+    pixbuf.savev(out_path, "jpeg", ["quality"], ["85"])
 
 
-def backdrop(path, palette, kind, seed):
-    dark, light = rgb(palette[0]), rgb(palette[1])
-    img = gradient(BACKDROP, dark, mix(dark, light, 0.3))
-    img = motif(img, kind, dark, light, seed).filter(ImageFilter.GaussianBlur(6))
-    img.save(path, "JPEG", quality=85)
+# ---------------------------------------------------------------------------
+# Data definitions: Artists, Albums, Playlists, Radio Stations
+# ---------------------------------------------------------------------------
 
+ARTISTS_DATA = [
+    {
+        "name": "The Midnight Archipelago",
+        "genre": "Post-Rock",
+        "bio": "An instrumental post-rock collective exploring expansive dynamic shifts, tape-looped guitars, and oceanic textures.",
+    },
+    {
+        "name": "Solaris Circuit",
+        "genre": "Synthwave",
+        "bio": "Blends analog polyphonic synthesizers with driving drum machine patterns, evoking neon-lit metropolitan nights.",
+    },
+    {
+        "name": "Maya Lin & The Tide",
+        "genre": "Indie Folk",
+        "bio": "Weaves fingerpicked acoustic guitars, upright bass, and intimate vocal harmonies into evocative coastal landscapes.",
+    },
+    {
+        "name": "Komorebi Quartet",
+        "genre": "Modern Classical",
+        "bio": "Combines prepared piano, cello, viola, and delicate field recordings, creating contemplative spaces exploring natural light.",
+    },
+    {
+        "name": "Neon Boulevard",
+        "genre": "Dream Pop",
+        "bio": "Crafts lush, shimmering dream pop and synthpop with reverb-drenched guitars, sparkling arpeggios, and melancholic melodies.",
+    },
+    {
+        "name": "Echoes of Orion",
+        "genre": "Ambient",
+        "bio": "Produces deep, immersive space ambient music utilizing modular synthesizer drones and resonant acoustic filters.",
+    },
+    {
+        "name": "Velvet Horizon",
+        "genre": "Neo-Soul",
+        "bio": "Marries warm Rhodes electric pianos, silky vocal arrangements, and unhurried hip-hop-influenced grooves.",
+    },
+    {
+        "name": "Dust & Radiance",
+        "genre": "Shoegaze",
+        "bio": "Creates dense walls of fuzzy distortion and soaring guitar glissandos, anchored by propulsive rhythm sections.",
+    },
+    {
+        "name": "Sora Takahashi",
+        "genre": "Nu-Jazz",
+        "bio": "Tokyo-based keyboardist bridging modal acoustic jazz, complex syncopations, and modern UK broken beat production.",
+    },
+    {
+        "name": "The Glass Observatory",
+        "genre": "Cinematic",
+        "bio": "Crafts grand, emotional cinematic narratives combining sweeping orchestral strings and subtle electronic undercurrents.",
+    },
+    {
+        "name": "Cassette Memories",
+        "genre": "Lo-Fi Hip-Hop",
+        "bio": "Crafts nostalgic instrumental lo-fi beats saturated with warm vinyl crackle, dust-laden samples, and relaxed drums.",
+    },
+    {
+        "name": "Aura & Frequency",
+        "genre": "Deep House",
+        "bio": "Explores the intersections of hypnotic deep house, rolling basslines, and melodic techno for peak-time dance floors.",
+    },
+    {
+        "name": "Juniper Moon",
+        "genre": "Indie Pop",
+        "bio": "Celebrated for upbeat jangly guitars, brass accents, lyrical wit, and irresistible infectious hooks.",
+    },
+    {
+        "name": "Paper Parachutes",
+        "genre": "Math Rock",
+        "bio": "Pairs intricate finger-tapping guitar work and interlocking odd-time polyrhythms with passionate, soaring choruses.",
+    },
+    {
+        "name": "Subterranean Brass",
+        "genre": "Funk & Jazz",
+        "bio": "A high-octane 8-piece brass powerhouse fusing New Orleans street grooves, hard bop phrasing, and heavy funk backbeats.",
+    },
+]
+
+ALBUMS_DATA = [
+    # 1. The Midnight Archipelago (3 albums)
+    {
+        "artist_idx": 0,
+        "title": "Signal from the Shallows",
+        "year": 2018,
+        "genre": "Post-Rock",
+        "summary": "An atmospheric exploration of maritime isolation, anchored by reverberant guitars and swelling cymbal washes.",
+        "discs": [
+            [
+                "Low Tide Warning", "Beacon in the Fog", "Submerged Currents",
+                "Breakwater Echo", "Distant Shoals", "Tidal Drift",
+                "The Shallows Wake", "Anchor Line", "Salt & Timber", "Returning Tide",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 0,
+        "title": "Islands in Suspension",
+        "year": 2021,
+        "genre": "Post-Rock",
+        "summary": "Expansive arrangements tracing the contours of remote archipelagos with soaring crescendos and delicate acoustic interludes.",
+        "discs": [
+            [
+                "Archipelago Sunrise", "Windward Passage", "Suspension Bridge",
+                "Isle of Glass", "Mist Over Cape Hope", "Granite Coast",
+                "Seafarer's Compass", "Quiet Estuary", "Echoes on the Water",
+                "Cove of Lanterns", "Midnight Horizon", "Drifting Home",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 0,
+        "title": "Cartography of Fog",
+        "year": 2024,
+        "genre": "Post-Rock",
+        "summary": "A sweeping double-album journey across uncharted coastal sounds, moving from meditative drones to thundering sonic squalls.",
+        "discs": [
+            [
+                "The Mapmaker's Ledger", "Charted Coastline", "Northbound Swell",
+                "Lost Coordinates", "Dense Maritime Air", "Shoal Marker",
+                "Sounding the Depth", "First Anchorage",
+            ],
+            [
+                "The Western Reach", "Ghost Ship Relay", "Barometer Falling",
+                "Lighthouse Beam", "Reef Navigation", "Storm Petrels",
+                "Compass Variation", "Safe Harbor Lights",
+            ],
+        ],
+    },
+
+    # 2. Solaris Circuit (3 albums)
+    {
+        "artist_idx": 1,
+        "title": "Neon Velocity",
+        "year": 2019,
+        "genre": "Synthwave",
+        "summary": "A nocturnal celebration of analog synthesizers, gated reverbs, and high-speed highway escapades.",
+        "discs": [
+            [
+                "Ignition Sequence", "Overdrive City", "Chrome Highway",
+                "Midnight Pursuit", "Turbocharger", "Gridlock Romance",
+                "Analog Boulevard", "Redline Horizon", "Nightfall Accelerant",
+                "Synthetic Pulse", "Dawn Run",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 1,
+        "title": "Transmission Zero",
+        "year": 2022,
+        "genre": "Synthwave",
+        "summary": "Dark cyberpunk motifs collide with cinematic arpeggios in a conceptual narrative of underground radio dissidents.",
+        "discs": [
+            [
+                "Frequency Lock", "Cybernetic Heart", "Signal Decode",
+                "Sublevel Terminal", "Fiber Optic Sky", "Rogue Satellite",
+                "Quantum Static", "Data Stream", "Baud Rate 9600", "End of Line",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 1,
+        "title": "Suborbital Drift",
+        "year": 2025,
+        "genre": "Electronic",
+        "summary": "Weightless electronic rhythms and modular sequences inspired by low-Earth orbit observations.",
+        "discs": [
+            [
+                "Atmosphere Exit", "Zero G Velocity", "Ion Engines",
+                "Orbital Decay", "Solar Wind", "Apogee Burn",
+                "Silent Thrusters", "Dark Side Transit", "Atmospheric Re-entry",
+            ],
+        ],
+    },
+
+    # 3. Maya Lin & The Tide (3 albums)
+    {
+        "artist_idx": 2,
+        "title": "Saltwater Hymns",
+        "year": 2017,
+        "genre": "Indie Folk",
+        "summary": "Intimate fingerpicked acoustic ballads recorded in an empty wooden chapel by the ocean.",
+        "discs": [
+            [
+                "Morning on the Pier", "Tidepool Reflections", "Dune Grass",
+                "Fisherman's Daughter", "Copper Kettle", "Salt Air",
+                "Woodsmoke & Sea", "The Old Dinghy", "Driftwood Fire", "Lullaby for High Seas",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 2,
+        "title": "Canyon Fireflies",
+        "year": 2020,
+        "genre": "Indie Folk",
+        "summary": "Earthy harmonies and porch-side storytelling capturing summer twilights in the high desert.",
+        "discs": [
+            [
+                "Red Rock Valley", "Firefly Glow", "Dust on the Windshield",
+                "Canyon Wall Whispers", "Pinecone Lanterns", "Riverbend Song",
+                "Porch Swing Melody", "Twilight Crickets", "Hitching Post",
+                "Cedar Smoke", "Sleep Beneath the Stars",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 2,
+        "title": "The Northern Harbor",
+        "year": 2023,
+        "genre": "Indie Folk",
+        "summary": "Rich chamber-folk arrangements with upright bass, fiddle, and poetic lyrics of homecoming.",
+        "discs": [
+            [
+                "Harbor Bells", "Ferry Crossing", "Woolen Sweaters",
+                "Gull Wing Flight", "November Mist", "Cobblestone Street",
+                "Anchored in the Bay", "Teahouse Window", "Rowboat Solitude",
+                "Cold Current", "Winter Wharf", "Homeward Voyage",
+            ],
+        ],
+    },
+
+    # 4. Komorebi Quartet (3 albums)
+    {
+        "artist_idx": 3,
+        "title": "Leaves in Still Water",
+        "year": 2016,
+        "genre": "Modern Classical",
+        "summary": "Gentle prepared piano and string motifs mirroring the calm ripples of autumn ponds.",
+        "discs": [
+            [
+                "First Ripple", "Canopy Sunlight", "Fallen Maple",
+                "Silent Pond", "Moss Garden", "Raindrop Cadence",
+                "Autumn Reverie", "Bamboo Shadows", "Evening Stillness",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 3,
+        "title": "Architecture of Silence",
+        "year": 2021,
+        "genre": "Modern Classical",
+        "summary": "A profound two-part meditation recorded inside historic cathedral cloisters, pairing resonance with deep pause.",
+        "discs": [
+            [
+                "Foundation Stone", "The Empty Corridor", "Arches of Dust",
+                "Resonant Room", "Vaulted Ceiling", "Shaft of Light", "Courtyard Rain",
+            ],
+            [
+                "Pillar Shadows", "Stairway in Marble", "Acoustic Reflection",
+                "The Cloister", "Stone Bench", "Belfry Breeze",
+                "Quiet Nave", "Final Echo",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 3,
+        "title": "Winter Light Studies",
+        "year": 2024,
+        "genre": "Modern Classical",
+        "summary": "Sparse cello and viola duets capturing the fragile crystalline stillness of northern winters.",
+        "discs": [
+            [
+                "Frost on Cedar", "Pale Sunlight", "Frozen Lake Etude",
+                "Icicle Harmonics", "Snowfall Nocturne", "Winter Solstice",
+                "Breath in Cold Air", "Glacial Purity", "Thawing Stream", "Early Spring Whisper",
+            ],
+        ],
+    },
+
+    # 5. Neon Boulevard (3 albums)
+    {
+        "artist_idx": 4,
+        "title": "Midnight Cassette Club",
+        "year": 2018,
+        "genre": "Dream Pop",
+        "summary": "Wistful dream-pop shimmering with vintage chorus pedals, tape flutter, and romantic nostalgia.",
+        "discs": [
+            [
+                "Side A Track 1", "Roller Disco", "Sunset Boulevard '88",
+                "Starlight Diner", "Lipstick Mirror", "Prom Night Regrets",
+                "Pastel Convertible", "Tape Rewind", "Neon Palms",
+                "Late Call", "Fade to Sunrise",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 4,
+        "title": "Electric Reverie",
+        "year": 2021,
+        "genre": "Synthpop",
+        "summary": "Energetic hooks and sparkling synth arpeggios designed for midnight drives and neon skylines.",
+        "discs": [
+            [
+                "Dream Sequence", "Laser Dance", "Prism Glow",
+                "Memory Card", "Velvet Highway", "Synthesizer Heartbeat",
+                "Mirage", "Electric Blue", "Midnight Kiss", "Reverie Outro",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 4,
+        "title": "After Hours Echo",
+        "year": 2024,
+        "genre": "Synthpop",
+        "summary": "Reflective downtempo synthpop capturing the quiet intimacy of empty city streets at 3 AM.",
+        "discs": [
+            [
+                "City Lights Blurring", "Last Call at the Lounge", "Rainy Asphalt",
+                "Subway Tile Reflection", "Taxi Ride Reverie", "Neon Umbrella",
+                "Night Owl", "2 AM Espresso", "Empty Dancefloor",
+                "Corner Booth", "Distant Sirens", "Dawn Breaking Over Rooftops",
+            ],
+        ],
+    },
+
+    # 6. Echoes of Orion (3 albums)
+    {
+        "artist_idx": 5,
+        "title": "Stellar Cartography",
+        "year": 2015,
+        "genre": "Ambient",
+        "summary": "Expansive analog drone compositions mapping distant celestial landmarks and quiet cosmic voids.",
+        "discs": [
+            [
+                "Pillars of Creation", "Horsehead Nebula", "Lagrange Point 2",
+                "Oort Cloud Passage", "Kuiper Belt Drift", "Cassini Gap",
+                "Andromeda Approaching", "Cosmic Horizon",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 5,
+        "title": "Voyager Suite",
+        "year": 2019,
+        "genre": "Ambient",
+        "summary": "A grand conceptual double album tracing the solitary trajectory of robotic explorers beyond our solar system.",
+        "discs": [
+            [
+                "Golden Record Intro", "Jupiter Flyby", "Great Red Spot",
+                "Radiation Belts", "Rings of Saturn", "Enceladus Geysers",
+                "Titan's Atmosphere", "Heliosphere Boundary",
+            ],
+            [
+                "Interstellar Medium", "Pale Blue Dot", "Signal Lag 19 Hours",
+                "Dark Void Transit", "Radioisotope Glow", "Cosmic Dust Impacts",
+                "Deep Space Antenna", "Wandering the Galaxy", "Infinite Silence",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 5,
+        "title": "Deep Cosmic Field",
+        "year": 2023,
+        "genre": "Ambient",
+        "summary": "Sub-bass frequencies and slow-evolving harmonic filters evocative of cosmic background radiation.",
+        "discs": [
+            [
+                "Vacuum Energy", "Event Horizon", "Singularity Pulse",
+                "Gravitational Wave", "Supercluster Web", "Dark Matter Halo",
+                "Cosmic Microwave Glow", "Pulsar Beacon", "Eternal Expansion",
+            ],
+        ],
+    },
+
+    # 7. Velvet Horizon (3 albums)
+    {
+        "artist_idx": 6,
+        "title": "Golden Hour Vibrations",
+        "year": 2020,
+        "genre": "Neo-Soul",
+        "summary": "Warm Rhodes progressions, buttery vocal arrangements, and laid-back grooves for sunset unwinding.",
+        "discs": [
+            [
+                "Honey Amber", "Warm Breeze", "Rooftop Sundown",
+                "Smooth Operator", "Silk Sheets", "Golden Hour Glow",
+                "Chai Tea & Chords", "Unspoken Rhythm", "Lazy Sunday Grooves",
+                "Amber Skies", "Dusk Embrace",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 6,
+        "title": "Midnight Bloom",
+        "year": 2022,
+        "genre": "Neo-Soul",
+        "summary": "Sensual nighttime R&B and jazz-infused chord work detailing romance and city nightlife.",
+        "discs": [
+            [
+                "Night Jasmine", "Velvet Petals", "Moonlit Patio",
+                "Low Key Loving", "Dim Lights & Wine", "Late Night Text",
+                "Heartstrings", "Midnight Bloom", "Slow Burn",
+                "Soulful Cadence", "Velvet Silhouette", "After Dark",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 6,
+        "title": "Velvet Sessions Vol. 1",
+        "year": 2025,
+        "genre": "Neo-Soul",
+        "summary": "Live-in-studio jams highlighting improvisational chemistry and unhurried acoustic warmth.",
+        "discs": [
+            [
+                "Session Prelude", "Rhodes in F Minor", "Pocket Groove",
+                "Muted Trumpet Soul", "Bassline Serenade", "Finger Snaps",
+                "Vinyl Interlude", "Vintage Warmth", "Late Jam", "Outro Toast",
+            ],
+        ],
+    },
+
+    # 8. Dust & Radiance (3 albums)
+    {
+        "artist_idx": 7,
+        "title": "Tremolo Summer",
+        "year": 2017,
+        "genre": "Shoegaze",
+        "summary": "Glissando guitar washes, dizzying whammy bar vibrato, and buried vocals in a haze of summer feedback.",
+        "discs": [
+            [
+                "Feedback Loop", "Sun Drenched Fuzz", "Tremolo Waves",
+                "Blinding Glare", "Reverb Haze", "Silver Lake Walk",
+                "Distortion Kiss", "Pedalboard Dreams", "Summer's End Swell",
+                "Overdrive Twilight",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 7,
+        "title": "Feedback Cathedral",
+        "year": 2020,
+        "genre": "Shoegaze",
+        "summary": "Towering walls of sonic fuzz and harmonic resonance creating an overwhelming yet sacred sonic sanctuary.",
+        "discs": [
+            [
+                "Nave of Noise", "Echo Chamber", "Stained Glass Shards",
+                "Vault of Reverb", "Sustained Note", "Altar of Amps",
+                "Sonic Sacrament", "Cathedral Bells", "Fuzz Choir",
+                "Harmonic Resonator", "Ascension",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 7,
+        "title": "Distortion in Bloom",
+        "year": 2023,
+        "genre": "Shoegaze",
+        "summary": "A massive two-disc shoegaze opus tracing fragile acoustic melodies as they disintegrate into euphoric distortion.",
+        "discs": [
+            [
+                "First Petal Feedback", "Overdriven Stem", "Wall of Sound Blossom",
+                "Swirling Chorus", "Decay Rate", "Fuzz Meadow",
+                "Grounded Wire", "Static Garden", "Greenhouse Drone",
+            ],
+            [
+                "Noon Sun Glare", "Tape Saturation", "Reverb Spores",
+                "Electric Vine", "Wild Thistle Distortion", "Blown Speaker Bloom",
+                "Dusk Petal", "Night-Blooming Jasmine Fuzz", "Root System",
+            ],
+        ],
+    },
+
+    # 9. Sora Takahashi (3 albums)
+    {
+        "artist_idx": 8,
+        "title": "Tokyo Rain Reflections",
+        "year": 2019,
+        "genre": "Nu-Jazz",
+        "summary": "Fluid piano lines and brushed syncopations capturing rainy evenings under Shinjuku's neon signs.",
+        "discs": [
+            [
+                "Shinjuku Crosswalk", "Umbrella Drops", "Neon in Puddles",
+                "Yamanote Line Groove", "Underpass Improvisation", "Midnight Ramen Blues",
+                "Alleyway Lanterns", "Rainy Windowpane", "Electric Piano Mist",
+                "Last Train at Midnight",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 8,
+        "title": "Modal Drift",
+        "year": 2022,
+        "genre": "Nu-Jazz",
+        "summary": "Complex modal jazz harmonies interwoven with lively broken-beat drumming and upright bass flourishes.",
+        "discs": [
+            [
+                "Dorian Awakening", "Pentatonic Cloud", "Syncopated Pulse",
+                "Rhodes Drift", "Bass Solo in E", "Brushed Snare",
+                "Polytonal Glide", "Fourth Interval", "Floating Measure",
+                "Modal Shift", "Coda Reflections",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 8,
+        "title": "Syncopation City",
+        "year": 2025,
+        "genre": "Nu-Jazz",
+        "summary": "A vibrant celebration of urban kinetic energy, shifting time signatures, and sparkling Rhodes solos.",
+        "discs": [
+            [
+                "Rush Hour 8 AM", "Cross-Rhythm Station", "Broken Beat Espresso",
+                "Hi-Hat Shuffle", "Subway Echoes", "7/8 On the Expressway",
+                "Pedestrian Syncopation", "Rooftop Jam", "Offbeat Romance",
+                "Groove Laboratory", "City Never Stops", "Night Transit",
+            ],
+        ],
+    },
+
+    # 10. The Glass Observatory (3 albums)
+    {
+        "artist_idx": 9,
+        "title": "Constellations in Amber",
+        "year": 2018,
+        "genre": "Cinematic",
+        "summary": "Orchestral strings and brass motifs evoking brass astrolabes and historic hilltop stargazing domes.",
+        "discs": [
+            [
+                "Lens Calibration", "Amber Skies", "Telescopic Sweep",
+                "The Dome Opens", "Brass Gears", "Focal Plane",
+                "Starlight Preserved", "Spectral Lines", "Dawn Shutter",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 9,
+        "title": "The Permafrost Echo",
+        "year": 2022,
+        "genre": "Cinematic",
+        "summary": "A chilling double-disc soundtrack for Arctic expeditions, balancing sub-zero strings with thundering percussion.",
+        "discs": [
+            [
+                "Tundra Expedition", "Ice Core Samples", "Glacial Moraine",
+                "The Frozen Valley", "Blizzard Approaches", "Aurora Borealis Choir",
+                "Sub-Zero Pressure", "First Thaw",
+            ],
+            [
+                "Deep Crevasse", "The Singing Ice", "Frozen Compass",
+                "Glacier Tongue", "Mammoth Bones", "Arctic Midnight Sun",
+                "Permafrost Memory", "Echoing Fjord",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 9,
+        "title": "Mirrors and Meteors",
+        "year": 2025,
+        "genre": "Cinematic",
+        "summary": "Dynamic brass swells and pulsing electronics inspired by meteor showers and optical astronomy.",
+        "discs": [
+            [
+                "Parabolic Mirror", "Shooting Star Trace", "Atmospheric Entry",
+                "Meteor Shower Suite", "Silver Coating", "Night Sky Panorama",
+                "Gravity Lens", "Impact Crater Echo", "Reflecting Pool",
+                "Orbital Sweep",
+            ],
+        ],
+    },
+
+    # 11. Cassette Memories (2 albums)
+    {
+        "artist_idx": 10,
+        "title": "Warm Tape Hiss",
+        "year": 2020,
+        "genre": "Lo-Fi Hip-Hop",
+        "summary": "Cozy beats saturated with vinyl crackle, dust-laden piano loops, and gentle rainy day vibes.",
+        "discs": [
+            [
+                "Coffee Grinder Intro", "Morning Sunlight", "Vintage Vinyl Flip",
+                "Rainy Day Study", "Muffled Snare", "Dusty Keys",
+                "Tape Head Cleaning", "Porch Stoop Beats", "Subtle Headnod",
+                "Cat on the Amplifier", "Bonsai Tree", "Midnight Chillout",
+                "Crayon Drawings", "Goodnight Tape",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 10,
+        "title": "Late Night Porch Sessions",
+        "year": 2023,
+        "genre": "Lo-Fi Hip-Hop",
+        "summary": "Relaxed porch-side beatcraft weaving acoustic guitar licks with cricket ambiance and gentle kicks.",
+        "discs": [
+            [
+                "Screen Door Slam", "Crickets in Stereo", "Gentle Strum",
+                "Neighborhood Lamp", "Cold Lemonade", "Firefly Beat",
+                "Vinyl Crackle Breeze", "Faded Photograph", "Late Summer Thoughts",
+                "Distant Trains", "Muted Horn", "Twilight Chords", "Moon Over the Yard",
+            ],
+        ],
+    },
+
+    # 12. Aura & Frequency (2 albums)
+    {
+        "artist_idx": 11,
+        "title": "Underground Reverberation",
+        "year": 2019,
+        "genre": "Deep House",
+        "summary": "Hypnotic rolling basslines and warm dub chords crafted for intimate basement sound systems.",
+        "discs": [
+            [
+                "Basement Entrance", "Sub-Bass Pressure", "4 AM Warehouse",
+                "Strobe Sequence", "Hypnotic Loop", "Filter Sweep",
+                "Deep Resonance", "Modular Acid", "Peak Time", "Tunnel Echo",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 11,
+        "title": "Resonance Chamber",
+        "year": 2023,
+        "genre": "Melodic Techno",
+        "summary": "A two-disc exploration of cavernous industrial reverbs, driving kicks, and ascending synth leads.",
+        "discs": [
+            [
+                "Chamber Acoustics", "Kicking Low", "Analog Hi-Hats",
+                "Dark Matter Groove", "Sonic Oscillation", "Subterranean Sweep",
+                "Pulse Modulation", "Reverb Tail",
+            ],
+            [
+                "Second Chamber", "Echo Velocity", "Industrial Percussion",
+                "Hypnotic State", "Midnight Frequency", "Sine Wave Meditation",
+                "Driving Rhythm", "Dawn Release",
+            ],
+        ],
+    },
+
+    # 13. Juniper Moon (2 albums)
+    {
+        "artist_idx": 12,
+        "title": "Wildflower Gazette",
+        "year": 2021,
+        "genre": "Indie Pop",
+        "summary": "Jangly acoustic guitars, whimsical lyricism, and chamber strings celebrating springtime adventures.",
+        "discs": [
+            [
+                "Morning Gazette", "Dandelion Wine", "Bicycle Bell Song",
+                "Picnic in the Park", "Penny Loafers", "Botanical Garden Waltz",
+                "Lemon Drop Sun", "Paper Airplane", "Cottage Garden",
+                "Chamber Strings", "Sunday Stroll",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 12,
+        "title": "Paper Lantern Waltz",
+        "year": 2024,
+        "genre": "Indie Pop",
+        "summary": "Delicate melodies and brass touches evoking evening lanterns swaying along garden paths.",
+        "discs": [
+            [
+                "Festival Eve", "Paper Lantern Glow", "String of Lights",
+                "Carousel Melody", "Night Market Waltz", "Origami Boat",
+                "Moonlit Pathway", "Gentle Clarinet", "Last Lantern", "Sleepy Town",
+            ],
+        ],
+    },
+
+    # 14. Paper Parachutes (2 albums)
+    {
+        "artist_idx": 13,
+        "title": "Odd Time Signatures",
+        "year": 2019,
+        "genre": "Math Rock",
+        "summary": "Intricate finger-tapping patterns in 7/8 and 5/4 anchored by passionate vocal melodies.",
+        "discs": [
+            [
+                "Count in 7/4", "Finger Tap Intro", "Polyrhythm Cafe",
+                "Twinkly Guitars", "Angular Chords", "Off-Grid Breakdown",
+                "Syncopated Heart", "Math Class Blues", "Pedal Shuffle",
+                "5/8 Resolution", "Final Measure",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 13,
+        "title": "Kinetic Geometry",
+        "year": 2023,
+        "genre": "Math Rock",
+        "summary": "Sharp rhythmic shifts, interlocking guitar loops, and explosive dynamic releases.",
+        "discs": [
+            [
+                "Tesseract", "Sharp Angles", "Interlocking Rhythms",
+                "Fractal Breakdown", "Kinetic Motion", "Triangulation",
+                "Perpendicular Lines", "Velocity Vector", "Harmonic Symmetry", "Zero Point",
+            ],
+        ],
+    },
+
+    # 15. Subterranean Brass (2 albums)
+    {
+        "artist_idx": 14,
+        "title": "Low Frequency Grooves",
+        "year": 2020,
+        "genre": "Funk & Jazz",
+        "summary": "Sousaphone basslines and infectious New Orleans second-line drumming with hard-hitting funk energy.",
+        "discs": [
+            [
+                "Sousaphone Strut", "Trombone Shout", "Funk in the Alley",
+                "Second Line Beat", "Heavy Horn Section", "Groove Machine",
+                "Low End Rumble", "Street Parade", "Brass Breakdown",
+                "Fat Bass Groove", "Encore Funk",
+            ],
+        ],
+    },
+    {
+        "artist_idx": 14,
+        "title": "The Basement Collective",
+        "year": 2024,
+        "genre": "Contemporary Jazz",
+        "summary": "Fiery brass solo trades and infectious syncopated backbeats captured in an intimate basement jam session.",
+        "discs": [
+            [
+                "Basement Jam Prelude", "Tenor Sax Battle", "Syncopated Snare",
+                "Hot Pepper Horns", "Bourbon Street Stomp", "Midnight Brass Session",
+                "Funky Footsteps", "Muted Trumpet Jam", "Collective Improv",
+                "Big Brass Energy", "Last Call Groove", "Walk Home Stomp",
+            ],
+        ],
+    },
+]
+
+PLAYLISTS_DATA = [
+    {
+        "title": "Late Night Drift",
+        "subtitle": "Apple Music Chill",
+        "genre": "Downtempo",
+        "summary": "Low-tempo beats, atmospheric synths, and mellow melodies for late hours and quiet contemplations.",
+        "filter_genres": ["Ambient", "Lo-Fi Hip-Hop", "Neo-Soul", "Modern Classical"],
+    },
+    {
+        "title": "Analog Horizons",
+        "subtitle": "Apple Music Electronic",
+        "genre": "Electronic",
+        "summary": "Warm analog synthesizer compositions, arpeggiated sequences, and vintage drum machines.",
+        "filter_genres": ["Synthwave", "Electronic", "Deep House", "Melodic Techno"],
+    },
+    {
+        "title": "Indie Currents",
+        "subtitle": "Apple Music Indie",
+        "genre": "Alternative & Indie",
+        "summary": "The most compelling new sounds from independent bands, singer-songwriters, and DIY studios.",
+        "filter_genres": ["Indie Folk", "Indie Pop", "Math Rock", "Post-Rock"],
+    },
+    {
+        "title": "Deep Focus & Stillness",
+        "subtitle": "Apple Music Ambient",
+        "genre": "Ambient",
+        "summary": "Uncluttered ambient soundscapes and subtle drones designed to foster concentration and flow.",
+        "filter_genres": ["Ambient", "Modern Classical"],
+    },
+    {
+        "title": "Modern Jazz Underground",
+        "subtitle": "Apple Music Jazz",
+        "genre": "Jazz",
+        "summary": "Contemporary jazz explorations, complex rhythms, and forward-thinking acoustic improvisations.",
+        "filter_genres": ["Nu-Jazz", "Funk & Jazz", "Contemporary Jazz"],
+    },
+    {
+        "title": "Sunset Drive",
+        "subtitle": "Curated by Music Menu",
+        "genre": "Indie Pop",
+        "summary": "Golden hour indie anthems and euphoric hooks perfect for winding coastal roads and open windows.",
+        "filter_genres": ["Dream Pop", "Indie Pop", "Indie Folk", "Synthpop"],
+    },
+    {
+        "title": "Neon Expressway",
+        "subtitle": "Apple Music Synthwave",
+        "genre": "Synthwave",
+        "summary": "High-octane synthwave, retro electro, and driving basslines for night driving under streetlights.",
+        "filter_genres": ["Synthwave", "Synthpop", "Electronic"],
+    },
+    {
+        "title": "Golden Hour Melodies",
+        "subtitle": "Apple Music Acoustic",
+        "genre": "Acoustic & Folk",
+        "summary": "Warm fingerstyle acoustics, gentle cello lines, and heartfelt vocal performances.",
+        "filter_genres": ["Indie Folk", "Modern Classical", "Neo-Soul"],
+    },
+    {
+        "title": "Subterranean Bass",
+        "subtitle": "Apple Music Club",
+        "genre": "Deep House",
+        "summary": "Deep, rolling grooves and hypnotic club rhythms from subterranean underground dancefloors.",
+        "filter_genres": ["Deep House", "Melodic Techno", "Electronic"],
+    },
+    {
+        "title": "Quiet Reflections",
+        "subtitle": "Apple Music Classical",
+        "genre": "Modern Classical",
+        "summary": "Gentle piano studies, minimalist string quartets, and contemplative neo-classical works.",
+        "filter_genres": ["Modern Classical", "Ambient", "Cinematic"],
+    },
+    {
+        "title": "Soul & Reverie",
+        "subtitle": "Apple Music R&B",
+        "genre": "Neo-Soul",
+        "summary": "Lush chord progressions, velvet vocals, and head-nodding neo-soul grooves for relaxed evenings.",
+        "filter_genres": ["Neo-Soul", "Lo-Fi Hip-Hop", "Nu-Jazz"],
+    },
+    {
+        "title": "Heavy Shoegaze & Echoes",
+        "subtitle": "Curated by Antigravity",
+        "genre": "Shoegaze",
+        "summary": "Swirling fuzz pedals, feedback-drenched melodies, and ethereal reverberations that envelop the senses.",
+        "filter_genres": ["Shoegaze", "Post-Rock", "Math Rock"],
+    },
+]
+
+STATIONS_DATA = [
+    {
+        "title": "Apple Music 1",
+        "subtitle": "Apple Music Radio",
+        "genre": "Various",
+        "summary": "The pulse of music culture with daily live broadcasts, exclusive artist interviews, and global premieres.",
+    },
+    {
+        "title": "Apple Music Hits",
+        "subtitle": "Apple Music Radio",
+        "genre": "Pop & Rock",
+        "summary": "Celebrating the songs you know and love from the '80s, '90s, and 2000s with passionate daily hosts.",
+    },
+    {
+        "title": "Apple Music Chill",
+        "subtitle": "Apple Music Radio",
+        "genre": "Downtempo & Ambient",
+        "summary": "An uninterrupted stream of relaxed beats, mellow melodies, and soothing acoustic textures.",
+    },
+    {
+        "title": "Echoes in the Dark",
+        "subtitle": "Apple Music Radio",
+        "genre": "Electronic & Ambient",
+        "summary": "Atmospheric electronica, hypnotic modular synthesis, and dark ambient soundscapes for nocturnal hours.",
+    },
+    {
+        "title": "Pacific Highway Radio",
+        "subtitle": "Apple Music Radio",
+        "genre": "Indie & Alternative",
+        "summary": "Carefree indie melodies, breezy dream pop, and road-trip classics broadcast straight from the coast.",
+    },
+    {
+        "title": "The Soundstage",
+        "subtitle": "Apple Music Radio",
+        "genre": "Cinematic & Soundtracks",
+        "summary": "Sweeping orchestral film scores, modern classical compositions, and epic cinematic themes.",
+    },
+    {
+        "title": "Ambient Sleep Radio",
+        "subtitle": "Apple Music Radio",
+        "genre": "Ambient",
+        "summary": "Gentle sonic textures, continuous pink noise, and calming generative drones designed for deep sleep.",
+    },
+    {
+        "title": "Global Rhythm Pulse",
+        "subtitle": "Apple Music Radio",
+        "genre": "World & Nu-Jazz",
+        "summary": "Infectious polyrhythms, Afrobeat brass, Latin jazz grooves, and cross-cultural beat experiments.",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 
 def slug(text):
+    """Generate a clean URL-friendly slug."""
     return "".join(c.lower() if c.isalnum() else "-" for c in text).strip("-")
 
 
+def format_duration(ms):
+    """Format milliseconds into 'M:SS' label."""
+    total_seconds = round(ms / 1000)
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"{minutes}:{seconds:02d}"
+
+
+def format_count_label(track_count, total_ms):
+    """Format count label like '12 songs, 43 min' or '24 songs, 1 hr 25 min'."""
+    mins = round(total_ms / 60000)
+    if mins >= 60:
+        hrs = mins // 60
+        rem_mins = mins % 60
+        time_str = f"{hrs} hr {rem_mins} min" if rem_mins else f"{hrs} hr"
+    else:
+        time_str = f"{mins} min"
+    song_unit = "song" if track_count == 1 else "songs"
+    return f"{track_count} {song_unit}, {time_str}"
+
+
+# ---------------------------------------------------------------------------
+# Main library builder
+# ---------------------------------------------------------------------------
+
+def build_demo_library(out_dir):
+    """Generate library.json and 512x512 artwork."""
+    rnd = random.Random(42)
+
+    art_dir = os.path.join(out_dir, "art")
+    os.makedirs(art_dir, exist_ok=True)
+
+    # If out_dir is not named 'music-menu', link 'music-menu' to '.'
+    # so clients looking in either $DIR/library.json or $DIR/music-menu/library.json find it.
+    if os.path.basename(out_dir) != "music-menu":
+        sub_mm = os.path.join(out_dir, "music-menu")
+        if not os.path.exists(sub_mm):
+            try:
+                os.symlink(".", sub_mm)
+            except OSError:
+                pass
+
+    catalog_id_base = 1724040000
+    global_trk_counter = 1
+
+    # 1. Build Albums and Tracks
+    albums = []
+    # Map artist_idx -> list of album objects for this artist
+    artist_albums_map = {i: [] for i in range(len(ARTISTS_DATA))}
+    all_tracks_catalog = []
+
+    for alb_idx, alb_data in enumerate(ALBUMS_DATA, 1):
+        artist_info = ARTISTS_DATA[alb_data["artist_idx"]]
+        artist_name = artist_info["name"]
+        album_id = f"l.alb{alb_idx:03d}"
+        album_cat_id = str(catalog_id_base + alb_idx * 10)
+        album_url = f"https://music.apple.com/us/album/{slug(alb_data['title'])}/{album_cat_id}"
+
+        # Assign artwork palette & motif
+        palette = PALETTES[alb_idx % len(PALETTES)]
+        motif = MOTIFS[alb_idx % len(MOTIFS)]
+        art_hash = hashlib.sha1(album_id.encode("utf-8")).hexdigest()
+        art_path = os.path.join(art_dir, f"{art_hash}.jpg")
+        draw_cover(
+            out_path=art_path,
+            title=alb_data["title"],
+            subtitle=artist_name,
+            badge=str(alb_data["year"]),
+            palette=palette,
+            motif=motif,
+            is_artist=False,
+        )
+
+        # Build album tracks and groups
+        album_groups = []
+        album_all_tracks = []
+        overall_index = 0
+
+        for disc_idx, disc_track_names in enumerate(alb_data["discs"], 1):
+            disc_entries = []
+            group_name = f"Disc {disc_idx}" if len(alb_data["discs"]) > 1 else "Disc 1"
+
+            for trk_num, trk_title in enumerate(disc_track_names, 1):
+                # Duration between 140s and 380s
+                dur_ms = rnd.randint(140, 380) * 1000 + rnd.randint(0, 999)
+                is_explicit = rnd.random() < 0.12  # ~12% explicit
+
+                trk_obj = {
+                    "id": f"i.trk{global_trk_counter:04d}",
+                    "catalogId": str(catalog_id_base + 50000 + global_trk_counter),
+                    "title": trk_title,
+                    "artist": artist_name,
+                    "album": alb_data["title"],
+                    "trackNumber": trk_num,
+                    "discNumber": disc_idx,
+                    "durationMs": dur_ms,
+                    "durationLabel": format_duration(dur_ms),
+                    "explicit": is_explicit,
+                    "index": overall_index,
+                }
+                global_trk_counter += 1
+                overall_index += 1
+                disc_entries.append(trk_obj)
+                album_all_tracks.append(trk_obj)
+                all_tracks_catalog.append((artist_info["genre"], trk_obj))
+
+            album_groups.append({
+                "name": group_name,
+                "play": {"kind": "album", "id": album_id},
+                "entries": disc_entries,
+            })
+
+        total_ms = sum(t["durationMs"] for t in album_all_tracks)
+        count_label = format_count_label(len(album_all_tracks), total_ms)
+        album_explicit = any(t["explicit"] for t in album_all_tracks)
+
+        album_item = {
+            "id": album_id,
+            "kind": "album",
+            "title": alb_data["title"],
+            "subtitle": artist_name,
+            "year": alb_data["year"],
+            "genre": alb_data["genre"],
+            "summary": alb_data["summary"],
+            "art": art_path,
+            "artColor": palette[1],
+            "countLabel": count_label,
+            "explicit": album_explicit,
+            "catalogId": album_cat_id,
+            "url": album_url,
+            "play": {"kind": "album", "id": album_id},
+            "groups": album_groups,
+        }
+        albums.append(album_item)
+        artist_albums_map[alb_data["artist_idx"]].append(album_item)
+
+    # 2. Build Artists
+    artists = []
+    for art_idx, art_data in enumerate(ARTISTS_DATA, 1):
+        artist_id = f"l.art{art_idx:03d}"
+        artist_cat_id = str(catalog_id_base + 1000 + art_idx)
+        artist_url = f"https://music.apple.com/us/artist/{slug(art_data['name'])}/{artist_cat_id}"
+
+        # Assign artwork palette & motif
+        palette = PALETTES[(art_idx * 3) % len(PALETTES)]
+        art_hash = hashlib.sha1(artist_id.encode("utf-8")).hexdigest()
+        art_path = os.path.join(art_dir, f"{art_hash}.jpg")
+        draw_cover(
+            out_path=art_path,
+            title=art_data["name"],
+            subtitle="Artist",
+            badge="ARTIST",
+            palette=palette,
+            motif="",
+            is_artist=True,
+        )
+
+        artist_albs = artist_albums_map[art_idx - 1]
+        artist_groups = []
+        total_songs = 0
+        for alb in artist_albs:
+            # Flatten tracks from album groups
+            alb_tracks = []
+            for g in alb["groups"]:
+                alb_tracks.extend(g["entries"])
+            total_songs += len(alb_tracks)
+
+            artist_groups.append({
+                "name": alb["title"],
+                "play": {"kind": "album", "id": alb["id"]},
+                "entries": alb_tracks,
+            })
+
+        count_label = f"{len(artist_albs)} albums, {total_songs} songs"
+
+        artist_item = {
+            "id": artist_id,
+            "kind": "artist",
+            "title": art_data["name"],
+            "subtitle": "Artist",
+            "year": None,
+            "genre": art_data["genre"],
+            "summary": art_data["bio"],
+            "art": art_path,
+            "artColor": palette[1],
+            "countLabel": count_label,
+            "explicit": False,
+            "catalogId": artist_cat_id,
+            "url": artist_url,
+            "play": {"kind": "artist", "id": artist_id},
+            "groups": artist_groups,
+        }
+        artists.append(artist_item)
+
+    # 3. Build Playlists
+    playlists = []
+    for pl_idx, pl_data in enumerate(PLAYLISTS_DATA, 1):
+        playlist_id = f"l.pl{pl_idx:03d}"
+        playlist_cat_id = str(catalog_id_base + 2000 + pl_idx)
+        playlist_url = f"https://music.apple.com/us/playlist/{slug(pl_data['title'])}/{playlist_cat_id}"
+
+        palette = PALETTES[(pl_idx * 5) % len(PALETTES)]
+        motif = MOTIFS[(pl_idx * 2) % len(MOTIFS)]
+        art_hash = hashlib.sha1(playlist_id.encode("utf-8")).hexdigest()
+        art_path = os.path.join(art_dir, f"{art_hash}.jpg")
+        draw_cover(
+            out_path=art_path,
+            title=pl_data["title"],
+            subtitle=pl_data["subtitle"],
+            badge="PLAYLIST",
+            palette=palette,
+            motif=motif,
+            is_artist=False,
+        )
+
+        # Pick candidate tracks matching playlist genre or collection
+        matching_tracks = [t for genre, t in all_tracks_catalog if genre in pl_data["filter_genres"]]
+        if len(matching_tracks) < 18:
+            matching_tracks = [t for _, t in all_tracks_catalog]
+
+        # Deterministic sample for this playlist
+        selected_raw = rnd.sample(matching_tracks, min(len(matching_tracks), 22))
+
+        playlist_tracks = []
+        for i, raw_trk in enumerate(selected_raw):
+            playlist_tracks.append({
+                "id": f"i.plt{pl_idx:02d}_{i:03d}",
+                "catalogId": raw_trk["catalogId"],
+                "title": raw_trk["title"],
+                "artist": raw_trk["artist"],
+                "album": raw_trk["album"],
+                "trackNumber": i + 1,
+                "discNumber": 1,
+                "durationMs": raw_trk["durationMs"],
+                "durationLabel": raw_trk["durationLabel"],
+                "explicit": raw_trk["explicit"],
+                "index": i,
+            })
+
+        total_ms = sum(t["durationMs"] for t in playlist_tracks)
+        count_label = format_count_label(len(playlist_tracks), total_ms)
+        playlist_explicit = any(t["explicit"] for t in playlist_tracks)
+
+        playlist_item = {
+            "id": playlist_id,
+            "kind": "playlist",
+            "title": pl_data["title"],
+            "subtitle": pl_data["subtitle"],
+            "year": 2026,
+            "genre": pl_data["genre"],
+            "summary": pl_data["summary"],
+            "art": art_path,
+            "artColor": palette[1],
+            "countLabel": count_label,
+            "explicit": playlist_explicit,
+            "catalogId": playlist_cat_id,
+            "url": playlist_url,
+            "play": {"kind": "playlist", "id": playlist_id},
+            "groups": [
+                {
+                    "name": "Tracks",
+                    "play": {"kind": "playlist", "id": playlist_id},
+                    "entries": playlist_tracks,
+                }
+            ],
+        }
+        playlists.append(playlist_item)
+
+    # 4. Build Radio Stations
+    radio_stations = []
+    for st_idx, st_data in enumerate(STATIONS_DATA, 1):
+        station_id = f"ra.st{st_idx:03d}"
+        station_cat_id = str(catalog_id_base + 3000 + st_idx)
+        station_url = f"https://music.apple.com/us/station/{slug(st_data['title'])}/{station_cat_id}"
+
+        palette = PALETTES[(st_idx * 7) % len(PALETTES)]
+        motif = MOTIFS[(st_idx * 3) % len(MOTIFS)]
+        art_hash = hashlib.sha1(station_id.encode("utf-8")).hexdigest()
+        art_path = os.path.join(art_dir, f"{art_hash}.jpg")
+        draw_cover(
+            out_path=art_path,
+            title=st_data["title"],
+            subtitle=st_data["subtitle"],
+            badge="RADIO",
+            palette=palette,
+            motif=motif,
+            is_artist=False,
+        )
+
+        station_item = {
+            "id": station_id,
+            "kind": "station",
+            "title": st_data["title"],
+            "subtitle": st_data["subtitle"],
+            "year": None,
+            "genre": st_data["genre"],
+            "summary": st_data["summary"],
+            "art": art_path,
+            "artColor": palette[1],
+            "countLabel": "Radio Station",
+            "explicit": False,
+            "catalogId": station_cat_id,
+            "url": station_url,
+            "play": {"kind": "station", "id": station_id},
+            "groups": [],
+        }
+        radio_stations.append(station_item)
+
+    # 5. Build Shelves
+    # Heavy Rotation: popular albums + top playlists + 1 radio station
+    heavy_rotation_items = [
+        albums[1],   # Islands in Suspension
+        albums[3],   # Neon Velocity
+        albums[6],   # Saltwater Hymns
+        albums[9],   # Leaves in Still Water
+        albums[18],  # Golden Hour Vibrations
+        playlists[0],  # Late Night Drift
+        playlists[5],  # Sunset Drive
+        radio_stations[0],  # Apple Music 1
+    ]
+
+    # Recently Added: 8 newest albums
+    newest_albums = sorted(albums, key=lambda a: (a["year"] or 0, a["id"]), reverse=True)[:8]
+
+    # Recently Played: 4 albums + 3 playlists + 1 radio station
+    recently_played_items = [
+        albums[4],   # Transmission Zero
+        albums[12],  # Midnight Cassette Club
+        albums[21],  # Tremolo Summer
+        albums[24],  # Tokyo Rain Reflections
+        playlists[1],  # Analog Horizons
+        playlists[2],  # Indie Currents
+        playlists[6],  # Neon Expressway
+        radio_stations[2],  # Apple Music Chill
+    ]
+
+    # Made for You: 4 playlists + 4 albums
+    made_for_you_items = [
+        playlists[3],  # Deep Focus & Stillness
+        playlists[4],  # Modern Jazz Underground
+        playlists[9],  # Quiet Reflections
+        playlists[10],  # Soul & Reverie
+        albums[15],  # Stellar Cartography
+        albums[27],  # Constellations in Amber
+        albums[30],  # Warm Tape Hiss
+        albums[38],  # Low Frequency Grooves
+    ]
+
+    shelves = [
+        {
+            "key": "heavy-rotation",
+            "title": "Heavy Rotation",
+            "items": heavy_rotation_items,
+        },
+        {
+            "key": "recently-added",
+            "title": "Recently Added",
+            "items": newest_albums,
+        },
+        {
+            "key": "recently-played",
+            "title": "Recently Played",
+            "items": recently_played_items,
+        },
+        {
+            "key": "made-for-you",
+            "title": "Made for You",
+            "items": made_for_you_items,
+        },
+    ]
+
+    library = {
+        "version": 1,
+        "generated": "2026-09-25T12:00:00Z",
+        "storefront": "us",
+        "sections": {
+            "albums": albums,
+            "artists": artists,
+            "playlists": playlists,
+            "radio": radio_stations,
+        },
+        "shelves": shelves,
+    }
+
+    out_file = os.path.join(out_dir, "library.json")
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(library, f, indent=2)
+
+    print(
+        f"demo library: {len(albums)} albums, {len(artists)} artists, "
+        f"{len(playlists)} playlists, {len(radio_stations)} radio stations in {out_dir}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI Entrypoint
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate a demo Apple Music library for Music Menu."
+    )
+    parser.add_argument(
+        "positional_dir",
+        nargs="?",
+        default=None,
+        help="Optional output directory (for compatibility with legacy invocations)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        "-o",
+        dest="out_dir",
+        default=None,
+        help="Directory to write library.json and art/ (defaults to ~/.cache/music-menu)",
+    )
+    args = parser.parse_args()
+
+    if args.out_dir:
+        out_dir = args.out_dir
+    elif args.positional_dir:
+        out_dir = args.positional_dir
+    else:
+        out_dir = os.environ.get("MUSIC_MENU_CACHE", os.path.expanduser("~/.cache/music-menu"))
+
+    return os.path.abspath(out_dir)
+
+
 def main():
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    root = os.path.join(os.path.abspath(sys.argv[1]), "music-menu")
-    posters = os.path.join(root, "posters")
-    backdrops = os.path.join(root, "backdrops")
-    for folder in (posters, backdrops):
-        os.makedirs(folder, exist_ok=True)
-
-    tv = []
-    for n, (title, year, rating, genres, palette, kind, summary) in enumerate(SHOWS):
-        rnd = random.Random(title)
-        key = slug(title)
-        poster_path = os.path.join(posters, f"tv_{key}.jpg")
-        backdrop_path = os.path.join(backdrops, f"tv_{key}.jpg")
-        poster(poster_path, title, year, palette, kind, n)
-        backdrop(backdrop_path, palette, kind, n)
-        episodes = []
-        seasons = rnd.randint(1, 3)
-        for season in range(1, seasons + 1):
-            # A season's names drawn without repeats, as a real one would be.
-            names = rnd.sample(EPISODE_WORDS, rnd.randint(6, 10))
-            for number, name in enumerate(names, 1):
-                stem = f"{title} - S{season:02}E{number:02} - {name}"
-                episodes.append({
-                    "title": stem,
-                    "filename": f"{stem}.mkv",
-                    "path": f"/demo/TV Shows/{title}/Season {season:02}/{stem}.mkv",
-                    "group": None,
-                    "has_subtitles": rnd.random() < 0.6,
-                    "size_mb": round(rnd.uniform(240, 1400), 1),
-                })
-        tv.append({
-            "id": key, "kind": "tv", "title": title, "year": year, "rating": rating,
-            "genres": genres, "summary": summary, "provider": "demo",
-            "poster_path": poster_path, "backdrop_path": backdrop_path,
-            "folder_path": f"/demo/TV Shows/{title}",
-            "episodes": episodes, "episode_count": len(episodes), "seasons": seasons,
-            "runtime": None, "scan_sig": "demo",
-        })
-
-    films = []
-    for n, (title, year, rating, genres, palette, kind, runtime, tagline, summary) in enumerate(FILMS):
-        key = slug(title)
-        poster_path = os.path.join(posters, f"film_{key}.jpg")
-        backdrop_path = os.path.join(backdrops, f"film_{key}.jpg")
-        poster(poster_path, title, year, palette, kind, 100 + n)
-        backdrop(backdrop_path, palette, kind, 100 + n)
-        stem = f"{title} ({year})"
-        path = f"/demo/Films/{stem}/{stem}.mkv"
-        films.append({
-            "id": key, "kind": "film", "title": title, "year": year, "rating": rating,
-            "genres": genres, "summary": summary, "tagline": tagline, "provider": "demo",
-            "poster_path": poster_path, "backdrop_path": backdrop_path,
-            "folder_path": f"/demo/Films/{stem}", "runtime": runtime,
-            "files": [{"title": stem, "filename": f"{stem}.mkv", "path": path, "group": None,
-                       "has_subtitles": True, "size_mb": round(runtime * 21.5, 1)}],
-            "main_path": path, "scan_sig": "demo",
-        })
-
-    library = {"version": 2, "generated": time.time(),
-               "sections": {"tv": tv, "films": films}, "scanned": {}}
-    with open(os.path.join(root, "library.json"), "w", encoding="utf-8") as f:
-        json.dump(library, f, indent=1)
-    print(f"demo library: {len(tv)} shows, {len(films)} films in {root}")
+    out_dir = parse_args()
+    build_demo_library(out_dir)
 
 
 if __name__ == "__main__":
