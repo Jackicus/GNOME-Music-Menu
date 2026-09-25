@@ -87,7 +87,7 @@ class MusicMenuLibraryPanel extends MediaPanel {
             this._panel.add_child(this._library.actor);
         }
         this._library.show(key);
-        this._library.currentView?.goToPage(0, false);
+        this._library.currentView?.goToPage?.(0, false);
     }
 
     // The grid on show.

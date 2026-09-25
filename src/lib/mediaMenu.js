@@ -399,7 +399,7 @@ export class MediaMenu {
             if (library) {
                 library.show(this._key);
                 library.actor.show();
-                library.currentView?.goToPage(0, false);
+                library.currentView?.goToPage?.(0, false);
             }
             this._syncWorkspaces(true);
             this._controls.queue_relayout();
