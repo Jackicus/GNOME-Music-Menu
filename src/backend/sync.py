@@ -987,40 +987,52 @@ def normalize_item(raw_item: dict, cache_dir: str | None = None, include_groups:
     return item
 
 
-# The shelves a search answers with, in the order Apple Music's own search
-# page shows them: the catalog's own pick of its best few hits across every
-# kind first (`with=topResults`, which the library's search does not have),
-# then one shelf per kind asked for. A kind that answered nothing has no
-# shelf.
-SEARCH_SHELVES = [
-    ("top", "Top Results"),
-    ("artists", "Artists"),
-    ("library-artists", "Artists"),
-    ("albums", "Albums"),
-    ("library-albums", "Albums"),
-    ("songs", "Songs"),
-    ("library-songs", "Songs"),
-    ("playlists", "Playlists"),
-    ("library-playlists", "Playlists"),
-    ("stations", "Stations"),
+# The shelves a search can answer with, as MusicKit names them, and what
+# each is called. `topResults` is the catalog's own pick of its best few
+# hits across every kind (asked for `with=topResults`; the library's search
+# has no such thing), which Apple Music's own search page puts first.
+SEARCH_SHELF_TITLES = {
+    "topResults": "Top Results",
+    "artists": "Artists",
+    "library-artists": "Artists",
+    "albums": "Albums",
+    "library-albums": "Albums",
+    "songs": "Songs",
+    "library-songs": "Songs",
+    "playlists": "Playlists",
+    "library-playlists": "Playlists",
+    "stations": "Stations",
+}
+# The order the shelves take when the answer does not say: Apple's own for
+# a search of this kind, as its `meta.results.order` has it.
+SEARCH_SHELF_ORDER = [
+    "topResults", "artists", "library-artists", "songs", "library-songs",
+    "albums", "library-albums", "playlists", "library-playlists", "stations",
 ]
 
 
 def search_results(raw: dict | None, cache_dir: str) -> dict:
     """`am.py search`'s answer from MusicKit's: `shelves`, one per kind that
-    answered, in SEARCH_SHELVES' order and each `{key, title, items}`; and
-    `items`, the same hits as one flat list with no repeats (a top result
-    is also among its kind's), for the overview's own search provider.
+    answered, each `{key, title, items}`, in the order Apple's own search
+    page shows them (`meta.results.order`, or SEARCH_SHELF_ORDER without
+    it) with Top Results first; and `items`, the same hits as one flat list
+    with no repeats (a top result is also among its kind's), for the
+    overview's own search provider.
 
     A search never waits on a download, so a hit's `art` is its cached
     cover when the sync has fetched it and a small catalog URL otherwise,
     which the shell fetches on its own; its `thumb` only ever names a file
     that is on disk."""
     results = (raw or {}).get("results") or {}
+    order = ((raw or {}).get("meta") or {}).get("results", {}).get("order")
+    if not isinstance(order, list):
+        order = []
+    keys = [k for k in order if k in SEARCH_SHELF_TITLES]
+    keys += [k for k in SEARCH_SHELF_ORDER if k not in keys]
     shelves = []
     items = []
     seen = set()
-    for key, title in SEARCH_SHELVES:
+    for key in keys:
         section = results.get(key)
         if not isinstance(section, dict):
             continue
@@ -1035,7 +1047,8 @@ def search_results(raw: dict | None, cache_dir: str) -> dict:
                 seen.add((item["kind"], item["id"]))
                 items.append(item)
         if hits:
-            shelves.append({"key": key.removeprefix("library-"), "title": title, "items": hits})
+            shelf_key = "top" if key == "topResults" else key.removeprefix("library-")
+            shelves.append({"key": shelf_key, "title": SEARCH_SHELF_TITLES[key], "items": hits})
     return {"shelves": shelves, "items": items}
 
 

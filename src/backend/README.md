@@ -73,7 +73,7 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `love\|unlove <kind> <id>`, `add-to-library <kind> <id>` | `{ok: true}` |
 | `playlists`, `add-to-playlist <playlistId> <songId>` | `{items: [{id, title}]}`, `{ok: true}` |
 | `lyrics <catalogSongId>` | `{synced, lines: [{startMs, endMs, text}]}`, cached under `<cache>/lyrics/` |
-| `search <term> [--library] [--limit N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (Top Results, Artists, Albums, Songs, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A hit's `art` is its cached cover or, unfetched, a 256px catalog URL; its `thumb` is null unless on disk |
+| `search <term> [--library] [--limit N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (`meta.results.order`: Top Results, then Artists, Songs, Albums, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A hit's `art` is its cached cover or, unfetched, a 256px catalog URL; its `thumb` is null unless on disk |
 
 ## `library.json`
 
