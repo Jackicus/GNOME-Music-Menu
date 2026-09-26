@@ -202,6 +202,31 @@ class TestSync(unittest.TestCase):
         self.assertIn("thumb", item)
         self.assertIn("thumb", item["groups"][0]["entries"][0])
 
+    def test_recommendation_shelves_follow_apples_order_and_titles(self):
+        def album(i):
+            return {"id": f"a{i}", "type": "albums", "attributes": {"name": f"Album {i}", "artistName": "X"}}
+        raw = [
+            {"id": "one", "attributes": {"title": {"stringForDisplay": "New Releases for You"}},
+             "relationships": {"contents": {"data": [album(1), album(2)]}}},
+            # A group: its members are shelves of their own, in place of it.
+            {"id": "grp", "attributes": {"isGroupRecommendation": True, "title": {"stringForDisplay": "Genres"}},
+             "relationships": {"recommendations": {"data": [
+                 {"id": "rock", "attributes": {"title": {"stringForDisplay": "Rock"}},
+                  "relationships": {"contents": {"data": [album(3)]}}},
+                 {"id": "empty", "attributes": {"title": {"stringForDisplay": "Nothing"}},
+                  "relationships": {"contents": {"data": []}}},
+             ]}}},
+            {"id": "st", "attributes": {"title": {"stringForDisplay": "Stations for You"}},
+             "relationships": {"contents": {"data": [
+                 {"id": "ra.1", "type": "stations", "attributes": {"name": "Alt Station"}}]}}},
+        ]
+        shelves = sync.recommendation_shelves(raw)
+        self.assertEqual([s["key"] for s in shelves], ["rec-one", "rec-rock", "rec-st"])
+        self.assertEqual([s["title"] for s in shelves], ["New Releases for You", "Rock", "Stations for You"])
+        self.assertEqual([it["title"] for it in shelves[0]["items"]], ["Album 1", "Album 2"])
+        self.assertEqual(shelves[2]["items"][0]["kind"], "station")
+        self.assertEqual(shelves[0]["items"][0]["groups"], [])
+
     def test_normalize_station(self):
         raw_station = {
             "id": "ra.12345",

@@ -85,8 +85,8 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 {
   "version": 1, "generated": "2026-09-25T12:00:00Z", "storefront": "us",
   "sections": {"albums": [Item], "artists": [Item], "playlists": [Item], "radio": [Item]},
-  "shelves": [{"key": "heavy-rotation", "title": "Heavy Rotation", "items": [Item]},
-              {"key": "recently-added", …}, {"key": "recently-played", …}, {"key": "made-for-you", …}]
+  "shelves": [{"key": "rec-<id>", "title": "New Releases for You", "items": [Item]}, …,  // Apple's home
+              {"key": "heavy-rotation", "title": "Heavy Rotation", …}, {"key": "recently-added", …}]
 }
 
 Item = {

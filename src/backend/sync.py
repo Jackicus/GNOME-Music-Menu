@@ -987,6 +987,42 @@ def normalize_item(raw_item: dict, cache_dir: str | None = None, include_groups:
     return item
 
 
+def recommendation_shelves(raw_recs: list, cache_dir: str | None = None) -> list[dict]:
+    """Apple's home page as shelves: one per recommendation, in the order
+    the API sends them, titled as Apple titles it ("New Releases for You",
+    "Stations for You", "More from …", a genre, a decade). A group
+    recommendation is its members, each a shelf of its own. Items are
+    normalised without their track lists, as a shelf's are; a
+    recommendation with nothing in it is left out.
+
+    Shelf = {"key": "rec-<id>", "title": "…", "items": [Item]}
+    """
+    shelves = []
+
+    def walk(rec):
+        if not isinstance(rec, dict):
+            return
+        attrs = rec.get("attributes") or {}
+        rel = rec.get("relationships") or {}
+        members = (rel.get("recommendations") or {}).get("data") or []
+        if members:
+            for member in members:
+                walk(member)
+            return
+        contents = (rel.get("contents") or {}).get("data") or []
+        items = [normalize_item(it, cache_dir, include_groups=False) for it in contents if isinstance(it, dict)]
+        items = [it for it in items if it and it.get("title")]
+        if not items:
+            return
+        title = attrs.get("title") or {}
+        title = (title.get("stringForDisplay") if isinstance(title, dict) else str(title)) or "For You"
+        shelves.append({"key": f"rec-{rec.get('id')}", "title": title, "items": items})
+
+    for rec in raw_recs or []:
+        walk(rec)
+    return shelves
+
+
 def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None = None) -> tuple[list[dict], list[dict]]:
     """Group songs from /v1/me/library/songs?include=albums into albums and artists."""
     albums_map: dict[str, dict] = {}

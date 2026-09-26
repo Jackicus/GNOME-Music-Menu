@@ -551,34 +551,32 @@ def handle_sync(only=None, no_start=False):
                 sections["radio"] = [sync.normalize_station(st_obj, cache_dir) for st_obj in raw_stations]
             counts["radio"] = len(sections["radio"])
 
-        # 4. Shelves
+        # 4. Shelves: Apple's own home page first — one shelf per
+        # recommendation, in Apple's order and with Apple's titles, Recently
+        # Played among them — then the library's own Heavy Rotation and
+        # Recently Added, which the home page does not carry.
         if not only or only == "shelves":
+            old_shelves = [sh for sh in previous.get("shelves") or [] if isinstance(sh, dict)]
+            try:
+                raw_recs = _api(client, "/v1/me/recommendations", {"limit": 25}).get("data") or []
+                shelves.extend(sync.recommendation_shelves(raw_recs, cache_dir))
+            except AmError as e:
+                # Last time's stand, rather than a home page with nothing on it.
+                _log(f"sync: recommendations: {e.message}")
+                shelves.extend(sh for sh in old_shelves if str(sh.get("key", "")).startswith("rec-"))
             # Each endpoint has a page cap of its own (a bigger `limit` is a
-            # 400, not a clamp): 10 for heavy rotation, 20 for recently played.
+            # 400, not a clamp): 10 for heavy rotation.
             shelf_defs = [
                 ("heavy-rotation", "Heavy Rotation", "/v1/me/history/heavy-rotation", 10),
                 ("recently-added", "Recently Added", "/v1/me/library/recently-added", 25),
-                ("recently-played", "Recently Played", "/v1/me/recent/played", 20),
-                ("made-for-you", "Made for You", "/v1/me/recommendations", 25),
             ]
-            old_shelves = {
-                sh.get("key"): sh for sh in previous.get("shelves") or [] if isinstance(sh, dict)
-            }
             for key, title, endpoint, page in shelf_defs:
-                items = []
                 try:
                     raw_items = _api(client, endpoint, {"limit": page}).get("data") or []
-                    if key == "made-for-you":
-                        for rec in raw_items:
-                            rec_items = rec.get("relationships", {}).get("contents", {}).get("data", [])
-                            for it in rec_items:
-                                items.append(sync.normalize_item(it, cache_dir, include_groups=False))
-                    else:
-                        for it in raw_items:
-                            items.append(sync.normalize_item(it, cache_dir, include_groups=False))
+                    items = [sync.normalize_item(it, cache_dir, include_groups=False) for it in raw_items]
                 except AmError as e:
                     _log(f"sync: shelf {key}: {e.message}")
-                    items = (old_shelves.get(key) or {}).get("items") or []
+                    items = next((sh.get("items") or [] for sh in old_shelves if sh.get("key") == key), [])
                 shelves.append({"key": key, "title": title, "items": items})
             counts["shelves"] = sum(len(s["items"]) for s in shelves)
 
