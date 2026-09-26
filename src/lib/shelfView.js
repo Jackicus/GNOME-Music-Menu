@@ -98,6 +98,7 @@ class Shelf {
             section: this._section,
             items: this._items,
             shape,
+            inList: true,
             onActivate: this._callbacks.onActivate,
             onContextMenu: this._callbacks.onContextMenu,
         });

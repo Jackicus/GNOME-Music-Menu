@@ -349,13 +349,14 @@ let pendingGrid = null;
 
 const MediaView = GObject.registerClass(
 class MusicMenuMediaView extends BaseAppView {
-    _init({section, items, onActivate, onContextMenu}) {
+    _init({section, items, inList = false, onActivate, onContextMenu}) {
         super._init({
             layout_manager: new Clutter.BinLayout(),
             x_expand: true,
             y_expand: true,
         });
         this.add_child(this._box);
+        this._inList = inList;
 
         // BaseAppView re-runs _redisplay — a diff over every tile built so
         // far — whenever an app is pinned to the dash or the parental filter
@@ -464,6 +465,23 @@ class MusicMenuMediaView extends BaseAppView {
         }
     }
 
+    // The wheel turns a page, as it does the app grid's — unless this view
+    // is a row in a list of them (a shelf), where an up-or-down wheel is the
+    // list's to scroll and only a sideways one is the row's.
+    _onScroll(actor, event) {
+        if (this._inList) {
+            const direction = event.get_scroll_direction();
+            if (direction === Clutter.ScrollDirection.UP || direction === Clutter.ScrollDirection.DOWN)
+                return Clutter.EVENT_PROPAGATE;
+            if (direction === Clutter.ScrollDirection.SMOOTH) {
+                const [dx, dy] = event.get_scroll_delta();
+                if (Math.abs(dy) >= Math.abs(dx))
+                    return Clutter.EVENT_PROPAGATE;
+            }
+        }
+        return super._onScroll(actor, event);
+    }
+
     // Every way of turning the page comes through here.
     goToPage(page, animate = true) {
         if (this._data)
@@ -548,10 +566,11 @@ class MusicMenuMediaView extends BaseAppView {
 
 // A view of `items` for the box it is given. `columns` and `rows` are the
 // grid-shape settings, which every caller passes; a `shape` (gridShapeFor's
-// answer, or one row of it) is taken as it is instead.
-export function createMediaView({section, items, width, height, columns, rows, shape = null, onActivate, onContextMenu}) {
+// answer, or one row of it) is taken as it is instead. `inList` is a shelf's
+// row, one of a scrolling list of them.
+export function createMediaView({section, items, width, height, columns, rows, shape = null, inList = false, onActivate, onContextMenu}) {
     pendingGrid = shape ?? gridFor(width, height, section.aspect, columns, rows);
-    const view = new MediaView({section, items, onActivate, onContextMenu});
+    const view = new MediaView({section, items, inList, onActivate, onContextMenu});
     // Filling the grid moves it: each batch of tiles makes another page, and
     // the grid follows the one it has just made. Start at the first.
     view.goToPage(0, false);
