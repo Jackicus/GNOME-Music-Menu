@@ -1324,13 +1324,13 @@ def build_demo_library(out_dir):
                     "durationLabel": format_duration(dur_ms),
                     "explicit": is_explicit,
                     "index": overall_index,
-                    "thumb": thumb_path,
+                    "thumb": None,
                 }
                 global_trk_counter += 1
                 overall_index += 1
                 disc_entries.append(trk_obj)
                 album_all_tracks.append(trk_obj)
-                all_tracks_catalog.append((artist_info["genre"], trk_obj))
+                all_tracks_catalog.append((artist_info["genre"], trk_obj, thumb_path))
 
             album_groups.append({
                 "name": group_name,
@@ -1444,15 +1444,16 @@ def build_demo_library(out_dir):
         )
 
         # Pick candidate tracks matching playlist genre or collection
-        matching_tracks = [t for genre, t in all_tracks_catalog if genre in pl_data["filter_genres"]]
+        matching_tracks = [(t, thumb) for genre, t, thumb in all_tracks_catalog if genre in pl_data["filter_genres"]]
         if len(matching_tracks) < 18:
-            matching_tracks = [t for _, t in all_tracks_catalog]
+            matching_tracks = [(t, thumb) for _, t, thumb in all_tracks_catalog]
 
         # Deterministic sample for this playlist
         selected_raw = rnd.sample(matching_tracks, min(len(matching_tracks), 22))
 
         playlist_tracks = []
-        for i, raw_trk in enumerate(selected_raw):
+        # A playlist's rows carry their own cover — the album's, here.
+        for i, (raw_trk, raw_thumb) in enumerate(selected_raw):
             playlist_tracks.append({
                 "id": f"i.plt{pl_idx:02d}_{i:03d}",
                 "catalogId": raw_trk["catalogId"],
@@ -1465,6 +1466,7 @@ def build_demo_library(out_dir):
                 "durationLabel": raw_trk["durationLabel"],
                 "explicit": raw_trk["explicit"],
                 "index": i,
+                "thumb": raw_thumb,
             })
 
         total_ms = sum(t["durationMs"] for t in playlist_tracks)

@@ -474,12 +474,15 @@ export class DetailView {
             for (; next < limit; next++) {
                 const entry = entries[next];
                 const key = entry.catalogId ?? entry.id;
+                // A track with a cover of its own — a playlist's, from
+                // albums of their own — shows it where its number would be.
                 const row = createRow({
                     index: entry.trackNumber,
                     title: entry.title,
                     subtitle: showArtist ? entry.artist : null,
                     explicit: entry.explicit,
                     duration: entry.durationLabel,
+                    art: entry.thumb ?? null,
                     nowPlaying: key != null && key === this._nowPlayingKey,
                     onActivate: () => run(['play', group.play.kind, group.play.id, '--start-with', String(entry.index)]).catch(notifyFailure),
                     onMenu: sourceActor => this._onMenu?.({item, track: entry, sourceActor}),

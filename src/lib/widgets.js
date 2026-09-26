@@ -298,6 +298,10 @@ export function createHeader({sections, active, onSwitch, onBack = null, end = [
     };
 }
 
+// A row's cover, where its number would be: `.mm-row-index`'s own size in
+// stylesheet.css — keep in step. Logical px.
+const ROW_ART = 36;
+
 // A small rounded label: a fact in the detail pane, a badge on a row. The class
 // is not optional — there is no bare `mm-pill` rule for one to fall back to.
 export function createPill(text, styleClass, style = null) {
@@ -308,13 +312,16 @@ export function createPill(text, styleClass, style = null) {
 // (or, once this is the track playing, to the same glyph in the accent
 // colour), the title with an "E" pill when explicit, the artist dimmed
 // underneath, a right-aligned duration and a `...` button that opens the
-// track's menu. Hover is a single background change on the row itself —
-// nothing inside it restyles on its own account, except the index glyph,
-// which this function toggles directly off crossing events and key focus
-// (not `track_hover`, and no rule keys a descendant off the row's own
-// `:hover` — see the Gotchas). Returns the row with `setNowPlaying(bool)`
-// attached, for the player to mark whichever row is currently playing.
-export function createRow({index, title, subtitle, explicit = false, duration, nowPlaying = false, onActivate, onMenu}) {
+// track's menu. With `art` — a playlist's rows, whose tracks come from
+// albums of their own — the track's cover stands where the number would,
+// as Apple Music has it, and the glyph comes up over it. Hover is a single
+// background change on the row itself — nothing inside it restyles on its
+// own account, except the index glyph, which this function toggles directly
+// off crossing events and key focus (not `track_hover`, and no rule keys a
+// descendant off the row's own `:hover` — see the Gotchas). Returns the row
+// with `setNowPlaying(bool)` attached, for the player to mark whichever row
+// is currently playing.
+export function createRow({index, title, subtitle, explicit = false, duration, art = null, nowPlaying = false, onActivate, onMenu}) {
     const row = new St.Button({
         // The theme's flat button: hover, focus and pressed come with it, and
         // the inline radius below overrides the one it brings.
@@ -327,18 +334,29 @@ export function createRow({index, title, subtitle, explicit = false, duration, n
     });
     const content = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER});
 
-    // The number and the play glyph sit on top of each other in the same
-    // bin; which one shows is `updateFace` below, not the stylesheet's doing.
-    const number = new St.Label({
-        text: String(index),
-        style_class: 'mm-row-number',
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
-    });
+    // The number — or the cover — and the play glyph sit on top of each
+    // other in the same bin; which shows is `updateFace` below, not the
+    // stylesheet's doing. The cover stays put under the glyph; the number
+    // gives way to it.
+    const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+    const number = art
+        ? createArtwork({
+            path: art,
+            icon: 'audio-x-generic-symbolic',
+            width: ROW_ART * scale,
+            height: ROW_ART * scale,
+            radius: 'badge',
+        })
+        : new St.Label({
+            text: String(index),
+            style_class: 'mm-row-number',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
     const playGlyph = new St.Icon({
         icon_name: 'media-playback-start-symbolic',
         icon_size: 14,
-        style_class: 'mm-row-play-icon',
+        style_class: art ? 'mm-row-play-icon mm-row-play-over-art' : 'mm-row-play-icon',
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
         visible: false,
@@ -347,7 +365,7 @@ export function createRow({index, title, subtitle, explicit = false, duration, n
     face.add_child(number);
     face.add_child(playGlyph);
     content.add_child(new St.Bin({
-        style_class: 'mm-row-index',
+        style_class: art ? 'mm-row-index mm-row-index-art' : 'mm-row-index',
         y_align: Clutter.ActorAlign.CENTER,
         child: face,
     }));
@@ -362,7 +380,8 @@ export function createRow({index, title, subtitle, explicit = false, duration, n
     let playing = nowPlaying;
     const updateFace = () => {
         const showGlyph = playing || hovered || focused;
-        number.visible = !showGlyph;
+        if (!art)
+            number.visible = !showGlyph;
         playGlyph.visible = showGlyph;
     };
     row.connect('enter-event', () => {

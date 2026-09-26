@@ -302,6 +302,12 @@
     font-feature-settings: "tnum";
 }
 
+/* A playlist row's cover stands in the index bin, which then draws no disc
+ * of its own behind it (widgets.js createRow's `art`). */
+.mm-row-index-art {
+    background-color: transparent;
+}
+
 /* The number and the play glyph sit on top of each other in the index bin;
  * `createRow` (widgets.js) shows and hides them directly off crossing
  * events, key focus and `setNowPlaying` — not a `:hover`/`:focus` rule
@@ -309,6 +315,14 @@
  * `:hover`). This is paint only. */
 .mm-row-play-icon {
     color: rgba(250, 250, 251, 0.85);
+}
+
+/* Over a cover the glyph gets a dark disc behind it, or it is lost on a
+ * light one. */
+.mm-row-play-over-art {
+    background-color: rgba(0, 0, 0, 0.55);
+    border-radius: 9999px;
+    padding: 6px;
 }
 
 /* The row currently playing keeps its glyph up without a pointer near it, in
