@@ -95,6 +95,10 @@ class MusicMenuLibraryPanel extends MediaPanel {
         return this._library?.currentView ?? null;
     }
 
+    get room() {
+        return this._library?.room ?? null;
+    }
+
     // Arrows with nothing inside focused go to the grid's first tile on show.
     _focusFirst() {
         return this._library?.focusFirst() ?? false;
@@ -205,6 +209,12 @@ export class LibraryWindow {
 
     get currentView() {
         return this._panel?.isOpen ? this._panel.currentView : null;
+    }
+
+    // A room up in the panel is what a rebuild would take down (see
+    // MediaMenu.busy).
+    get busy() {
+        return !!this._panel?.isOpen && !!this._panel.room;
     }
 
     // What is up, for a rebuild to put back (see MediaMenu.state).

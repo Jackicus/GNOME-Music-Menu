@@ -75,12 +75,17 @@ const KIND_ICON = {
 // Pages built beyond the one showing, so the next is there to swipe to —
 // built this long after the page they follow, not with it. A page is painted
 // whether or not it is on screen, and every cover's first paint is a
-// rendering of its own (St draws a rounded image through cairo), so three
+// decode of its own (St reads a background image on the compositor's own
+// thread, at the file's size, and keeps it for the session), so three
 // pages of covers at once was most of what opening the library cost; the
 // one on show comes first and the rest arrive once the overview, or the
-// page turn, has landed.
-const PAGES_AHEAD = 2;
+// page turn, has landed. How many is the `pages-ahead` setting, read by
+// app.js before any grid is built: a slow machine is better off with none.
+let pagesAhead = 2;
 const PAGES_AHEAD_DELAY = 400;
+export function setPagesAhead(count) {
+    pagesAhead = Math.max(0, Math.min(3, Math.round(count) || 0));
+}
 
 // The `grid-align` setting: 'center' places a part-full row as the app grid
 // does, under the middle of the full ones, 'start' lines it up on the leading
@@ -447,7 +452,7 @@ class MusicMenuMediaView extends BaseAppView {
         this._fillTo(0);
     }
 
-    // Tiles through `page`, appended in order, and the PAGES_AHEAD past it a
+    // Tiles through `page`, appended in order, and the pages ahead of it a
     // moment later. Straight into the grid: the view's own _redisplay diffs
     // every item against every other, which is nothing for the apps and
     // seconds for a big library.
@@ -461,7 +466,7 @@ class MusicMenuMediaView extends BaseAppView {
         if (this._aheadTimer)
             GLib.source_remove(this._aheadTimer);
         this._aheadTimer = 0;
-        if (ahead > PAGES_AHEAD || this._media.length >= this._data.length)
+        if (ahead > pagesAhead || this._media.length >= this._data.length)
             return;
         this._aheadTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, adjustAnimationTime(PAGES_AHEAD_DELAY), () => {
             this._aheadTimer = 0;

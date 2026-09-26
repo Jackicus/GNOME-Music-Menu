@@ -393,6 +393,16 @@ export class MediaMenu {
         return this.isShowing ? this._library?.currentView ?? null : null;
     }
 
+    // Whether something is up that a rebuild would take out from under the
+    // user — a search, its page, a room — for app.js to hold a fresh
+    // library.json back until it is not.
+    get busy() {
+        if (!this.isShowing)
+            return false;
+        return this._landingUp || !!this._library?.room ||
+            !!this._controls?._searchController?.searchActive;
+    }
+
     // What is up, for a rebuild to put back: the tab showing, and whether the
     // overview it is in is one our button opened. A rebuild tears this menu
     // down and makes another (a change of `columns`, a rescan landing), and

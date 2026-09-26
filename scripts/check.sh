@@ -10,6 +10,11 @@ for f in src/*.js src/lib/*.js; do
     node --check "$tmp/x.mjs" 2>"$tmp/err" || { echo "JS syntax: $f"; sed 's/^/    /' "$tmp/err"; fail=1; }
 done
 node tests/js/test_bridge.js || fail=1
+# The GJS tests get a cache directory of their own: GLib settles the user's
+# at start-up, so it has to be in the environment before gjs runs.
+for t in tests/js/test_player_state.js tests/js/test_library.js; do
+    XDG_CACHE_HOME="$tmp/cache" gjs -m "$t" >"$tmp/out" 2>&1 || { echo "gjs: $t"; sed 's/^/    /' "$tmp/out"; fail=1; }
+done
 python3 -m py_compile src/backend/*.py scripts/*.py || fail=1
 glib-compile-schemas --strict --dry-run src/schemas || { echo "schema does not compile"; fail=1; }
 python3 -m unittest discover -s tests -q || fail=1

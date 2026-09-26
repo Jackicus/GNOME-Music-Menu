@@ -44,10 +44,10 @@ import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import {Duration, Ease, POP_SCALE, allocateNow, fadeTo, flyClone, rectIn} from './anim.js';
-import {SECTIONS, loadLibrary, libraryPath, enabledSections, sectionByKey, sectionKeyForKind} from './library.js';
+import {SECTIONS, emptyLibrary, loadLibrary, libraryPath, readCachedItem, enabledSections, sectionByKey, sectionKeyForKind} from './library.js';
 import {createHeader, createIconButton} from './widgets.js';
 import {setCornerRadius, PANE_INSET} from './shape.js';
-import {setGridAlign} from './mediaGrid.js';
+import {setGridAlign, setPagesAhead} from './mediaGrid.js';
 import {HEADER_ALLOWANCE, LibraryView} from './libraryView.js';
 import {LibraryButton} from './libraryButton.js';
 import {DetailView} from './detailView.js';
@@ -73,6 +73,9 @@ const WORKSPACE_SLIDE_TIME = 250;
 // An automatic sync found overdue at enable waits this long first: a sync
 // starts Chrome, and the login it usually coincides with has enough to do.
 const SYNC_GRACE_SECONDS = 180;
+// A fresh library.json found while something is being looked at — a pick,
+// a search — is tried again this often until the way is clear.
+const REBUILD_RETRY_MS = 1500;
 // The places a workspace of ours can show, as `_placeForWorkspace` names them:
 // the library, or a picked item on a page of its own. There is one library,
 // one pane and one pick, so there is only ever one of each.
@@ -133,7 +136,12 @@ export class MusicMenuApp {
         // The popup of the "menu" and "modal" detail modes; null when picks
         // open on the surface.
         this._dialog = null;
-        this._sections = {};
+        // The library as last read (library.js), with the stamp of the file
+        // it came from; and which read is the latest, so a slower one that
+        // was overtaken is dropped.
+        this._sections = emptyLibrary();
+        this._loadToken = 0;
+        this._enabled = false;
         // The tab the library is on, wherever it is browsed. It outlives a
         // rebuild, so the library comes back on the tab it was left on.
         this._sectionKey = null;
@@ -145,7 +153,10 @@ export class MusicMenuApp {
         // `_onWorkspaceChanged` compares against.
         this._shown = null;
         this._busy = false;
+        // What the rebuild timer has been asked for: the library read again,
+        // and a rebuild for its own sake (a setting, the geometry).
         this._reloadWanted = false;
+        this._rebuildWanted = false;
         // Workspaces given up and still being slid away from, and what each
         // was showing: the slide still wants a picture of them.
         this._leaving = new Map();
@@ -225,8 +236,7 @@ export class MusicMenuApp {
             recents: this._recents,
         });
         this._search.register();
-        this._sections = loadLibrary();
-        this._build();
+        this._enabled = true;
         this._scheduleSync();
 
         global.workspace_manager.connectObject(
@@ -255,7 +265,7 @@ export class MusicMenuApp {
         Main.overview.connectObject('hidden',
             () => this._syncKeyFocus(this._onTarget()), this);
 
-        const rebuildKeys = ['columns', 'rows', 'grid-align', 'corner-radius', 'detail-size',
+        const rebuildKeys = ['columns', 'rows', 'grid-align', 'corner-radius', 'detail-size', 'pages-ahead',
             ...SECTIONS.map(s => `${s.prefix}-enabled`)];
         for (const key of rebuildKeys)
             this._settings.connectObject(`changed::${key}`, () => this._scheduleRebuild(), this);
@@ -305,10 +315,21 @@ export class MusicMenuApp {
             console.warn(`[Music Menu] Could not watch library.json: ${e}`);
         }
 
-        this._syncVisibility(false);
+        // The library is read off the main loop and built when it lands; a
+        // disable in between finds nothing built and builds nothing. A
+        // geometry change in between can have built already, on the empty
+        // library — torn down first, as any rebuild is.
+        this._loadLibrary().then(() => {
+            if (!this._enabled)
+                return;
+            this._teardown();
+            this._build();
+            this._syncVisibility(false);
+        });
     }
 
     disable() {
+        this._enabled = false;
         Main.wm.removeKeybinding('library-shortcut');
         global.workspace_manager.disconnectObject(this);
         global.display.disconnectObject(this);
@@ -326,13 +347,14 @@ export class MusicMenuApp {
                 GLib.source_remove(id);
         }
         this._rebuildTimer = this._closeTimer = this._syncTimer = 0;
+        this._reloadWanted = this._rebuildWanted = false;
         this._leaving.clear();
         this._teardown();
         this._button.detach();
         this._libraryWorkspace = this._detailWorkspace = null;
         this._picked = this._origin = null;
         this._keepOnly(new Set());
-        this._sections = {};
+        this._sections = emptyLibrary();
         this._search?.unregister();
         this._search = null;
         this._recents = null;
@@ -396,28 +418,75 @@ export class MusicMenuApp {
     }
 
     // Settings and geometry changes arrive in bursts (a slider dragged, every
-    // monitor reporting in), and a rescan writes the library more than once;
-    // `reload` rides the same timer so a burst of either is one rebuild.
+    // monitor reporting in), and a sync writes the library while anything
+    // may be up; `reload` rides the same timer so a burst of either is one
+    // rebuild. A fresh library.json is read off the main loop first, and
+    // read for nothing when it turns out to be the same library (the
+    // stamp): an hourly sync that found nothing new is then no rebuild at
+    // all. And it waits while something is being looked at that a rebuild
+    // would take down — a pick, a search, a room — since the pane closing
+    // under the user's hands is exactly the hang a background sync must not
+    // be. A rebuild asked for its own sake (a setting) goes at once.
     _scheduleRebuild({reload = false, delay = 150} = {}) {
         this._reloadWanted ||= reload;
+        this._rebuildWanted ||= !reload;
         if (this._rebuildTimer)
             GLib.source_remove(this._rebuildTimer);
         this._rebuildTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
             this._rebuildTimer = 0;
-            if (this._reloadWanted)
-                this._sections = loadLibrary();
-            this._reloadWanted = false;
-            // A browser being looked at is put back on the same tab once
-            // rebuilt, so the change that caused the rebuild shows where it
-            // is being looked for rather than on the next press.
-            const browsing = this._browser?.state ?? null;
-            this._teardown();
-            this._build();
-            this._syncVisibility(false);
-            this._browser?.restore(browsing);
-            console.log('[Music Menu] Rebuilt');
+            if (this._reloadWanted && !this._rebuildWanted && this._rebuildBlocked()) {
+                this._scheduleRebuild({reload: true, delay: REBUILD_RETRY_MS});
+                return GLib.SOURCE_REMOVE;
+            }
+            const reload = this._reloadWanted;
+            const wanted = this._rebuildWanted;
+            this._reloadWanted = this._rebuildWanted = false;
+            if (!reload) {
+                this._rebuild();
+                return GLib.SOURCE_REMOVE;
+            }
+            this._loadLibrary().then(changed => {
+                if (!this._enabled)
+                    return;
+                if (changed || wanted)
+                    this._rebuild();
+                else
+                    console.log('[Music Menu] library.json rewritten unchanged; nothing to rebuild');
+            });
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    // Read library.json again. Answers whether it differs from what is built
+    // — false too when a later read has overtaken this one, whose answer is
+    // then nobody's.
+    async _loadLibrary() {
+        const token = ++this._loadToken;
+        const library = await loadLibrary();
+        if (token !== this._loadToken || !this._enabled)
+            return false;
+        const changed = library.stamp !== this._sections.stamp;
+        this._sections = library;
+        return changed;
+    }
+
+    // Something a rebuild would take out from under the user.
+    _rebuildBlocked() {
+        return this._busy || this._mode !== 'library' ||
+            !!this._dialog?.isOpen || !!this._nowPlayingPanel?.isOpen ||
+            !!this._browser?.busy || !!this._library?.room;
+    }
+
+    _rebuild() {
+        // A browser being looked at is put back on the same tab once
+        // rebuilt, so the change that caused the rebuild shows where it
+        // is being looked for rather than on the next press.
+        const browsing = this._browser?.state ?? null;
+        this._teardown();
+        this._build();
+        this._syncVisibility(false);
+        this._browser?.restore(browsing);
+        console.log('[Music Menu] Rebuilt');
     }
 
     // ------------------------------------------------------------------
@@ -861,8 +930,10 @@ export class MusicMenuApp {
 
     // library.json carries a track list for what is in the library, and only
     // a tile for what a shelf recommends (backend/README.md, `sync`). A pick
-    // without one opens at once on what it has, and its list follows from
-    // `am.py item`, filled into the item itself so a second look is instant.
+    // without one opens at once on what it has, and its list follows — from
+    // the copy `am.py item` left on disk last time, if that is fresh enough
+    // (library.js readCachedItem), else from the engine — filled into the
+    // item itself so a second look is instant.
     _needsGroups(item) {
         return !!item && item.kind !== 'station' && !!item.play && !item.groups?.length && !item._loadingGroups;
     }
@@ -874,7 +945,7 @@ export class MusicMenuApp {
         this._dialog?.setLoading(true);
         this._detail?.setLoading(true);
         try {
-            const full = await amctl.run(['item', item.kind, item.id]);
+            const full = await this._fetchItem(item.kind, item.id);
             item.groups = Array.isArray(full.groups) ? full.groups : [];
             // The count label is the one fact the list changes: a shelf's
             // "12 songs" becomes "12 songs, 43 min" once the tracks are known.
@@ -898,6 +969,13 @@ export class MusicMenuApp {
         this._detail?.setLoading(false);
         this._dialog?.update(item);
         this._detail?.update(item);
+    }
+
+    // The whole of an item — its groups, its facts, its artwork fetched — from
+    // the on-disk copy of the last fetch when that is fresh, else from the
+    // engine, which leaves a fresh copy behind.
+    async _fetchItem(kind, id) {
+        return await readCachedItem(kind, id) ?? await amctl.run(['item', kind, id]);
     }
 
     // The pane onto the surface, wherever this pick is set to open it. Shared
@@ -1147,7 +1225,7 @@ export class MusicMenuApp {
         let full = item;
         if (!item.groups) {
             try {
-                full = await amctl.run(['item', item.kind, item.id]);
+                full = await this._fetchItem(item.kind, item.id);
             } catch (e) {
                 console.warn(`[Music Menu] Could not load ${item.kind} ${item.id}: ${e.message}`);
             }
@@ -1185,6 +1263,7 @@ export class MusicMenuApp {
         // setting has to be in place before anything below is built.
         setCornerRadius(this._settings.get_int('corner-radius'));
         setGridAlign(this._settings.get_string('grid-align'));
+        setPagesAhead(this._settings.get_int('pages-ahead'));
 
         // Recorded first, whatever is built below: a geometry change compares
         // against it, and without it every 'workareas-changed' would rebuild.

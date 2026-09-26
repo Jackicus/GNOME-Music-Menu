@@ -3,6 +3,7 @@
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import Pango from 'gi://Pango';
 
 import {Duration, Ease, fadeTo} from './anim.js';
@@ -27,6 +28,13 @@ export function createLabel(text, styleClass, props = {}) {
 // A poster: the image when there is one, otherwise a tinted placeholder built
 // from the section icon and the title. Placeholders live in the stylesheet so
 // they follow the system accent colour.
+//
+// Whether the image is there is settled here, as the tile is built, rather
+// than for the whole library as it is read: a path in library.json can
+// outlive its file (a cleared cache, a cover the sync could not fetch), and
+// St paints a missing background image as nothing at all, so the placeholder
+// would never get its turn. One stat per tile built is nothing; the views
+// only ever build a page or two at a time.
 export function createArtwork({path, title, icon, width, height, styleClass = 'mm-art', radius = 'art'}) {
     const art = new St.Widget({
         style_class: styleClass,
@@ -42,7 +50,7 @@ export function createArtwork({path, title, icon, width, height, styleClass = 'm
         x_expand: false,
         y_expand: false,
     });
-    if (path) {
+    if (path && GLib.file_test(path, GLib.FileTest.EXISTS)) {
         art.set_style(artworkStyle(path, radius));
         return art;
     }
