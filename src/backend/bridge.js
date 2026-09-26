@@ -447,15 +447,22 @@
             }
         },
 
+        // `limit` is per type. The catalog is also asked for its own pick of
+        // the best few hits across every type (`with=topResults`, answered
+        // as `results.top`), which is the "Top Results" shelf at the head
+        // of Apple Music's own search page; the library's search has no
+        // such thing.
         search: async function (term, isLibrary, limit) {
             const mk = getMusicKit();
             if (!mk) throw new Error('MusicKit not initialized');
             const sf = mk.storefrontId || 'us';
             const types = isLibrary
                 ? 'library-albums,library-artists,library-playlists,library-songs'
-                : 'albums,artists,playlists,songs';
+                : 'albums,artists,playlists,songs,stations';
             const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
-            return await apiCall(path, { term: term, types: types, limit: limit || 20 });
+            const params = { term: term, types: types, limit: limit || 20 };
+            if (!isLibrary) params.with = 'topResults';
+            return await apiCall(path, params);
         }
     };
 })();

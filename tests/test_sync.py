@@ -227,6 +227,46 @@ class TestSync(unittest.TestCase):
         self.assertEqual(shelves[2]["items"][0]["kind"], "station")
         self.assertEqual(shelves[0]["items"][0]["groups"], [])
 
+    def test_search_results_are_shelved_in_apples_order(self):
+        with open(os.path.join(os.path.dirname(__file__), "fixtures", "search_results.json")) as f:
+            raw = json.load(f)
+        # The catalog's own Top Results: the same song again, and the album.
+        song = raw["results"]["songs"]["data"][0]
+        album = raw["results"]["albums"]["data"][0]
+        raw["results"]["top"] = {"data": [song, album]}
+        # A cover the sync has fetched already, and its thumbnail.
+        cover_url = sync.template_artwork_url(album["attributes"]["artwork"]["url"], 512, 512)
+        thumb_path = sync.thumb_cache_path(cover_url, self.tmp_dir)
+        os.makedirs(os.path.dirname(thumb_path))
+        with open(thumb_path, "wb") as f:
+            f.write(b"jpg")
+
+        out = sync.search_results(raw, self.tmp_dir)
+
+        self.assertEqual([s["key"] for s in out["shelves"]], ["top", "artists", "albums", "songs", "playlists"])
+        self.assertEqual([s["title"] for s in out["shelves"]], ["Top Results", "Artists", "Albums", "Songs", "Playlists"])
+        top = out["shelves"][0]["items"]
+        self.assertEqual([it["kind"] for it in top], ["song", "album"])
+        self.assertEqual(top[0]["groups"], [])
+        # Flat, no repeats, the top results first.
+        self.assertEqual([(it["kind"], it["id"]) for it in out["items"]],
+                         [("song", song["id"]), ("album", album["id"]), ("artist", "123456"),
+                          ("playlist", "pl.fys-essentials")])
+        # The album's thumbnail is on disk and stays; its cover is not, so a
+        # small catalog URL stands in. The song carries no artwork at all.
+        hit_album = out["shelves"][2]["items"][0]
+        self.assertEqual(hit_album["thumb"], thumb_path)
+        self.assertTrue(hit_album["art"].startswith("https://"))
+        self.assertIn("256x256", hit_album["art"])
+        hit_song = out["shelves"][3]["items"][0]
+        self.assertIsNone(hit_song["thumb"])
+        self.assertIsNone(hit_song["art"])
+
+    def test_search_results_with_nothing(self):
+        self.assertEqual(sync.search_results(None, self.tmp_dir), {"shelves": [], "items": []})
+        self.assertEqual(sync.search_results({"results": {"albums": {"data": []}}}, self.tmp_dir),
+                         {"shelves": [], "items": []})
+
     def test_normalize_station(self):
         raw_station = {
             "id": "ra.12345",

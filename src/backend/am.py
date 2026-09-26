@@ -884,22 +884,7 @@ def handle_search(term, library=False, limit=20, no_start=False):
     client = get_bridge_client(no_start=no_start)
     try:
         res = client.evaluate(f"window.__musicMenu.search({json.dumps(term)}, {json.dumps(library)}, {int(limit)})", await_promise=True)
-        cache_dir = get_cache_dir()
-        items = []
-        raw_results = res.get("results", {}) if res else {}
-        for section_key, section_data in raw_results.items():
-            if not isinstance(section_data, dict):
-                continue
-            for raw_item in section_data.get("data", []):
-                item = sync.normalize_item(raw_item, cache_dir, include_groups=False)
-                # A catalog hit's art is not in the cache yet, and a search
-                # must not wait on downloads: hand the search provider a small
-                # remote URL instead, which it fetches asynchronously.
-                if not (item.get("art") and os.path.exists(item["art"])):
-                    url = ((raw_item.get("attributes") or {}).get("artwork") or {}).get("url")
-                    item["art"] = sync.template_artwork_url(url, 128, 128) if url else None
-                items.append(item)
-        return {"items": items}
+        return sync.search_results(res, get_cache_dir())
     except Exception as e:
         raise AmError("api", f"Search failed: {e}")
     finally:

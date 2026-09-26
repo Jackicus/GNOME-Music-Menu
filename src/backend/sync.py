@@ -987,6 +987,69 @@ def normalize_item(raw_item: dict, cache_dir: str | None = None, include_groups:
     return item
 
 
+# The shelves a search answers with, in the order Apple Music's own search
+# page shows them: the catalog's own pick of its best few hits across every
+# kind first (`with=topResults`, which the library's search does not have),
+# then one shelf per kind asked for. A kind that answered nothing has no
+# shelf.
+SEARCH_SHELVES = [
+    ("top", "Top Results"),
+    ("artists", "Artists"),
+    ("library-artists", "Artists"),
+    ("albums", "Albums"),
+    ("library-albums", "Albums"),
+    ("songs", "Songs"),
+    ("library-songs", "Songs"),
+    ("playlists", "Playlists"),
+    ("library-playlists", "Playlists"),
+    ("stations", "Stations"),
+]
+
+
+def search_results(raw: dict | None, cache_dir: str) -> dict:
+    """`am.py search`'s answer from MusicKit's: `shelves`, one per kind that
+    answered, in SEARCH_SHELVES' order and each `{key, title, items}`; and
+    `items`, the same hits as one flat list with no repeats (a top result
+    is also among its kind's), for the overview's own search provider.
+
+    A search never waits on a download, so a hit's `art` is its cached
+    cover when the sync has fetched it and a small catalog URL otherwise,
+    which the shell fetches on its own; its `thumb` only ever names a file
+    that is on disk."""
+    results = (raw or {}).get("results") or {}
+    shelves = []
+    items = []
+    seen = set()
+    for key, title in SEARCH_SHELVES:
+        section = results.get(key)
+        if not isinstance(section, dict):
+            continue
+        hits = []
+        for raw_item in section.get("data") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            item = normalize_item(raw_item, cache_dir, include_groups=False)
+            _settle_search_art(item, raw_item)
+            hits.append(item)
+            if (item["kind"], item["id"]) not in seen:
+                seen.add((item["kind"], item["id"]))
+                items.append(item)
+        if hits:
+            shelves.append({"key": key.removeprefix("library-"), "title": title, "items": hits})
+    return {"shelves": shelves, "items": items}
+
+
+def _settle_search_art(item: dict, raw_item: dict) -> None:
+    """A search hit's artwork as it stands: the sync's files where they
+    exist, a THUMB_SIZE catalog URL for the cover otherwise, and no thumb
+    at all rather than the name of one that was never fetched."""
+    if not (item.get("thumb") and os.path.exists(item["thumb"])):
+        item["thumb"] = None
+    if not (item.get("art") and os.path.exists(item["art"])):
+        url = ((raw_item.get("attributes") or {}).get("artwork") or {}).get("url")
+        item["art"] = template_artwork_url(url, THUMB_SIZE, THUMB_SIZE) if url else None
+
+
 def recommendation_shelves(raw_recs: list, cache_dir: str | None = None) -> list[dict]:
     """Apple's home page as shelves: one per recommendation, in the order
     the API sends them, titled as Apple titles it ("New Releases for You",
