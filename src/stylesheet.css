@@ -376,6 +376,37 @@
     opacity: 1;
 }
 
+/* The rows that stand in for a track list still on its way (detailView.js
+ * `_buildSkeleton`): the row's own height and radius, a dimmer disc where
+ * the number goes, and two bars of text-height nothing. The breathing is
+ * the box's opacity, eased in JS. */
+.mm-row-skeleton {
+    border-radius: 18px;
+    padding: 8px 14px 8px 8px;
+    min-height: 36px;
+    height: 36px;
+}
+
+.mm-skeleton-disc {
+    background-color: rgba(250, 250, 251, 0.05);
+}
+
+.mm-skeleton-text {
+    spacing: 7px;
+}
+
+.mm-skeleton-bar {
+    height: 10px;
+    border-radius: 5px;
+    background-color: rgba(250, 250, 251, 0.14);
+}
+
+.mm-skeleton-bar-dim {
+    height: 8px;
+    border-radius: 4px;
+    background-color: rgba(250, 250, 251, 0.08);
+}
+
 /* ---- Empty state ------------------------------------------------------- */
 
 .mm-empty {

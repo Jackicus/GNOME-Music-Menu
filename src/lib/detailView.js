@@ -49,6 +49,13 @@ const SUMMARY_LINES = 3;
 // staggered in — and the rest follow as the list scrolls.
 const FIRST_ROWS = 24;
 const ROWS_PER_BATCH = 16;
+// While a list is still on its way from the engine, this many rows of the
+// list's own shape stand where it will go, breathing, so the pane reads as
+// filling in rather than as waiting on a word. Logical px for the bars.
+const SKELETON_ROWS = 6;
+const SKELETON_TITLE = [180, 220, 150];
+const SKELETON_SUBTITLE = [100, 130];
+const SKELETON_BREATH_MS = 900;
 
 export class DetailView {
     // `frame` is what the pane draws around itself: its own rounded, bordered
@@ -231,16 +238,15 @@ export class DetailView {
         this._fillList(0);
     }
 
-    // What an empty group says: nothing, or nothing yet.
-    get _emptyText() {
-        return this._loading ? 'Loading…' : 'Nothing here yet.';
-    }
-
-    // While a groupless item's list is on its way (app.js `_loadGroups`).
+    // While a groupless item's list is on its way (app.js `_loadGroups`): the
+    // skeleton stands in for it, and comes down again if nothing arrives.
     setLoading(loading) {
-        this._loading = !!loading;
-        if (this._list instanceof St.Label)
-            this._list.text = this._emptyText;
+        loading = !!loading;
+        if (loading === this._loading)
+            return;
+        this._loading = loading;
+        if (this._list?._placeholder && this._listHost)
+            this._showGroup(this._groupIndex, {animate: false});
     }
 
     // A station is what has no track list; anything else without groups is
@@ -459,9 +465,7 @@ export class DetailView {
 
         const group = this._groups[index];
         const old = this._list;
-        const list = group?.entries?.length
-            ? this._buildList(group)
-            : new St.Label({text: this._emptyText, style_class: 'mm-empty-hint', x_expand: true});
+        const list = group?.entries?.length ? this._buildList(group) : this._buildPlaceholder();
         this._list = list;
         this._listHost.add_child(list);
 
@@ -470,6 +474,52 @@ export class DetailView {
             return;
         }
         slideSwap(old, list, index >= previous ? 1 : -1, {distance: 24, onComplete: () => old?.destroy()});
+    }
+
+    // What stands where an empty group's list would: rows still to come, or
+    // the word that none are.
+    _buildPlaceholder() {
+        const placeholder = this._loading
+            ? this._buildSkeleton()
+            : new St.Label({text: 'Nothing here yet.', style_class: 'mm-empty-hint', x_expand: true});
+        placeholder._placeholder = true;
+        return placeholder;
+    }
+
+    // Rows of the list's own height and shape with nothing in them — a disc
+    // where the number goes, a bar for the title and a shorter one under it
+    // — the whole lot breathing between dim and dimmer for as long as it is
+    // up. With animations off it simply stands still.
+    _buildSkeleton() {
+        const scale = this._scale;
+        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'mm-list'});
+        for (let i = 0; i < SKELETON_ROWS; i++) {
+            const row = new St.BoxLayout({style_class: 'mm-row mm-row-skeleton', x_expand: true, style: radiusStyle()});
+            row.add_child(new St.Widget({style_class: 'mm-row-index mm-skeleton-disc', y_align: Clutter.ActorAlign.CENTER}));
+            const text = new St.BoxLayout({
+                orientation: Clutter.Orientation.VERTICAL,
+                style_class: 'mm-row-text mm-skeleton-text',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            text.add_child(new St.Widget({
+                style_class: 'mm-skeleton-bar',
+                width: Math.round(SKELETON_TITLE[i % SKELETON_TITLE.length] * scale),
+            }));
+            text.add_child(new St.Widget({
+                style_class: 'mm-skeleton-bar mm-skeleton-bar-dim',
+                width: Math.round(SKELETON_SUBTITLE[i % SKELETON_SUBTITLE.length] * scale),
+            }));
+            row.add_child(text);
+            box.add_child(row);
+        }
+        box.ease({opacity: 110, duration: SKELETON_BREATH_MS, mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD});
+        const breath = box.get_transition('opacity');
+        if (breath) {
+            breath.repeat_count = -1;
+            breath.auto_reverse = true;
+        }
+        return box;
     }
 
     _buildList(group) {
