@@ -22,11 +22,18 @@
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 
 import {ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
 import {createMediaView, firstTileInsetFor, gridShapeFor, pageHeightFor} from './mediaGrid.js';
+import {cacheRemoteArt} from './playerUtil.js';
 import {createLabel} from './widgets.js';
+
+// Covers fetched at once, for shelves whose covers are not on disk
+// (`fetchArt`): a shelf is a score of them, and the shell's main loop
+// takes each one's arrival.
+const FETCHES_AT_ONCE = 4;
 
 // A shelf's header, near enough, for how many shelves fill the first screen
 // before anything is allocated. Logical px.
@@ -78,6 +85,10 @@ class Shelf {
         return !!this.view;
     }
 
+    get items() {
+        return this._items;
+    }
+
     // The row, once the shelf is in view.
     build() {
         if (!this.view)
@@ -125,7 +136,27 @@ export class ShelfView {
     // top-aligned in the stack rather than filling it (the stack is left
     // unclipped for a grid's hovered edge tiles) so a shelf ends above the
     // player bar instead of running behind it.
-    constructor({section, shelves = [], width, height = 0, columns, rows, onActivate, onContextMenu}) {
+    //
+    // `fetchArt` is for shelves that did not come through a sync — a
+    // category's (libraryView.js `openRoom`) — whose items' `art` is a
+    // catalog URL rather than a file: nothing a tile can draw. It is put
+    // aside as `artUrl`, so the tile starts on its drawn placeholder, and
+    // fetched a few at a time as each shelf is built, into the same cache
+    // the search's covers go to; the tile takes it as it lands.
+    constructor({section, shelves = [], width, height = 0, columns, rows, onActivate, onContextMenu, fetchArt = false}) {
+        this._fetching = null;
+        this._queue = [];
+        this._inFlight = 0;
+        if (fetchArt) {
+            for (const shelf of shelves) {
+                for (const item of shelf.items ?? []) {
+                    if (typeof item.art === 'string' && /^https?:\/\//.test(item.art)) {
+                        item.artUrl = item.art;
+                        item.art = null;
+                    }
+                }
+            }
+        }
         this._list = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             style_class: 'mm-shelf-list',
@@ -154,7 +185,7 @@ export class ShelfView {
         const shelfHeight = pageHeightFor({...shape, rows: 1}) + HEADER_ESTIMATE * scale;
         const first = height > 0 ? Math.ceil(height / shelfHeight) + 1 : this._shelves.length;
         for (const shelf of this._shelves.slice(0, first))
-            shelf.build();
+            this._build(shelf);
 
         // The rest as they come into view: on each scroll, and on each
         // layout, since a row opened out with "See All" moves the ones below.
@@ -188,7 +219,43 @@ export class ShelfView {
                 continue;
             const {y1, y2} = shelf.actor.allocation;
             if (y2 > top && y1 < bottom)
-                shelf.build();
+                this._build(shelf);
+        }
+    }
+
+    // A shelf's row, and the covers its tiles are still short of.
+    _build(shelf) {
+        shelf.build();
+        const wanted = shelf.items.filter(item => item.artUrl && !item.thumb && !item._fetchingArt);
+        if (!wanted.length)
+            return;
+        for (const item of wanted)
+            item._fetchingArt = true;
+        this._queue.push(...wanted);
+        this._fetching ??= new Gio.Cancellable();
+        this._pump();
+    }
+
+    // The covers queued, a few at a time, each onto its tile as it lands —
+    // or onto the item alone, for a tile rebuilt since (a row opened out
+    // with "See All"), which draws it when it is. Cancelled with the view,
+    // so a late one never touches a tile that has gone.
+    _pump() {
+        const cancellable = this._fetching;
+        while (this._inFlight < FETCHES_AT_ONCE && this._queue.length && !cancellable.is_cancelled()) {
+            const item = this._queue.shift();
+            this._inFlight++;
+            cacheRemoteArt(item.artUrl, cancellable).then(path => {
+                this._inFlight--;
+                delete item._fetchingArt;
+                if (cancellable.is_cancelled())
+                    return;
+                if (path) {
+                    item.thumb = path;
+                    this.tileFor(item.id)?.icon.update();
+                }
+                this._pump();
+            });
         }
     }
 
@@ -229,6 +296,8 @@ export class ShelfView {
             global.stage.disconnect(this._focusId);
             this._focusId = 0;
         }
+        this._fetching?.cancel();
+        this._queue = [];
     }
 
     destroy() {

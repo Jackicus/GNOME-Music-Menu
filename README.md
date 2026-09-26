@@ -24,7 +24,11 @@ view. No paid app, no developer account — it drives Apple's own web player.
   art, lyrics, and the Up Next queue.
 - **Search from the overview.** Type in GNOME's own search and Apple Music's
   catalogue and your library answer alongside your apps. With the menu
-  open, the same search is Apple Music's alone: only its results show.
+  open, the same search is Apple Music's alone, laid out as its own: Top
+  Results as a row of icons, Apple's suggestions for what you're typing,
+  then Artists, Albums, Songs, Playlists, Music Videos and Stations. Click
+  the empty search bar and you get Apple Music's search page — what you
+  picked recently, and Rock to Wellbeing to browse, each a page of shelves.
 - **Right-click actions.** Play Next, Play Later, love/unlove, add to library
   or a playlist, copy link — on a tile or a track row.
 - **Remote or controller.** Map a TV remote's keys or a game controller's

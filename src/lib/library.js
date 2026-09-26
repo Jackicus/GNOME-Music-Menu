@@ -87,7 +87,7 @@ export function enabledSections(settings) {
     return SECTIONS.filter(section => settings.get_boolean(`${section.prefix}-enabled`));
 }
 
-function cacheDir() {
+export function cacheDir() {
     return GLib.build_filenamev([GLib.get_user_cache_dir(), 'music-menu']);
 }
 

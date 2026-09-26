@@ -27,11 +27,16 @@
 //
 // What is ours here: the workspaces row above the grid is folded away while
 // the view is up, so the posters get its room. And the shell's own search,
-// begun with the view up, is put to Apple Music's provider and to no other:
-// typing runs the search exactly as it runs over the app grid — the view
-// fades out under the results and comes back as the search ends — but only
-// Apple Music answers. Everywhere else in the overview the search is the
-// shell's own, Apple Music one provider among the rest (searchProvider.js).
+// begun with the view up, is put to Apple Music's providers and to no
+// other: typing runs the search exactly as it runs over the app grid — the
+// view fades out under the results and comes back as the search ends —
+// but only Apple Music answers, laid out as its own search box lays its
+// answers out (searchProvider.js). Before anything is typed, the keyboard
+// in the empty entry puts Apple Music's own search page in the view's
+// place (landingView.js): recent picks and categories to browse, a
+// category opening as a page of shelves in the tabs' place. Everywhere
+// else in the overview the search is the shell's own, Apple Music one
+// provider among the rest.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -40,6 +45,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {ControlsState} from 'resource:///org/gnome/shell/ui/overviewControls.js';
 
 import {Duration, Ease} from './anim.js';
+import {LandingView} from './landingView.js';
 import {LibraryView} from './libraryView.js';
 
 // The overview gives the dash no more than this share of its height, and
@@ -76,10 +82,14 @@ function wrapMethod(object, name, make) {
 export class MediaMenu {
     // `button` is the library's button beside Show Apps, which the app holds
     // and hands to whichever place the library opens in; `onSwitch` hears of
-    // a tab chosen here. `searchProvider` is Apple Music's own provider in
-    // the shell's search (searchProvider.js), the one a search begun with
-    // the view up is put to.
-    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null, searchProvider = null}) {
+    // a tab chosen here. `search` is Apple Music in the shell's search
+    // (searchProvider.js MusicSearch), whose providers a search begun with
+    // the view up is put to and no other; `recents` (recents.js) is what
+    // was picked out of searches, for the search page; `onSearchPick(item)`
+    // is one of those picked again, and `onCategory(category)` a category
+    // picked, answered with its page `{title, shelves}` or null.
+    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null,
+        search = null, recents = null, onSearchPick = null, onCategory = null}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._onActivate = onActivate;
@@ -89,7 +99,15 @@ export class MediaMenu {
         this._button = button;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
-        this._provider = searchProvider;
+        this._search = search;
+        this._recents = recents;
+        this._onSearchPick = onSearchPick;
+        this._onCategory = onCategory;
+        // The search page before anything is typed (landingView.js), and
+        // whether it is what the slot shows in the library's place.
+        this._landing = null;
+        this._landingUp = false;
+        this._landingIdle = 0;
         // The player bar (app.js), reattached to every LibraryView this menu
         // builds — a resize drops and rebuilds the view, but the bar itself
         // is a singleton for the whole extension.
@@ -160,12 +178,22 @@ export class MediaMenu {
 
         // A search begun with the view up is Apple Music's alone, until it
         // ends (_takeSearch). And the end of one shows the workspaces again,
-        // whatever is up.
+        // whatever is up, and settles whether the search page or the tab
+        // comes back (_syncLanding).
         this._controls._searchController?.connectObject('notify::search-active', controller => {
             this._setExclusive(controller.searchActive && this.isShowing);
             if (!controller.searchActive && this._showing)
                 this._syncWorkspaces(true);
+            this._queueLandingSync();
         }, this);
+
+        // The search page follows the keyboard into the empty entry
+        // (_syncLanding), and goes at a press outside it (_onCapturedPress).
+        global.stage.connectObject(
+            'notify::key-focus', () => this._queueLandingSync(),
+            'captured-event::button', (_stage, event) => this._onCapturedPress(event),
+            'captured-event::touch', (_stage, event) => this._onCapturedPress(event),
+            this);
 
         this._adjustment = this._controls._stateAdjustment ?? null;
         this._adjustment?.connectObject('notify::value', () => this._syncWorkspaces(), this);
@@ -226,6 +254,10 @@ export class MediaMenu {
         if (this._keyId)
             global.stage.disconnect(this._keyId);
         this._keyId = 0;
+        global.stage.disconnectObject(this);
+        if (this._landingIdle)
+            GLib.source_remove(this._landingIdle);
+        this._landingIdle = 0;
         this._restoreSearch?.();
         this._restoreSearch = null;
         this._setExclusive(false);
@@ -422,22 +454,141 @@ export class MediaMenu {
     // and of St's focus manager, which takes the arrows in the capture
     // phase before any view of ours. Only with the view up, and never over
     // a popup (an item's menu) or the shell's own search, which keep their
-    // own keys: in an overview our button opened, Escape closes it whole —
-    // the desktop is where it was opened from — where the shell's would
-    // only step down to the window picker. Not with the keyboard in an
-    // empty entry, whose Escape is the shell's and only lets the keyboard go.
+    // own keys. Escape steps back one thing at a time, where the shell's
+    // would step the app grid down (and take a forced overview with it):
+    // the search page, if that is up, with the keyboard let out of the
+    // entry as the shell's own Escape there lets it; then a room; and in an
+    // overview our button opened, Escape closes it whole — the desktop is
+    // where it was opened from — where the shell's would only step down to
+    // the window picker. Not with the keyboard in an empty entry, whose
+    // Escape is the shell's and only lets the keyboard go.
     _onCapturedKey(event) {
         if (event.type() !== Clutter.EventType.KEY_PRESS ||
             !this._showing || !this._showAppsButton?.checked ||
             Main.modalCount > 1 || this._controls?._searchController?.searchActive)
             return Clutter.EVENT_PROPAGATE;
         const symbol = event.get_key_symbol();
+        if (symbol !== Clutter.KEY_Escape)
+            return Clutter.EVENT_PROPAGATE;
+        if (this._landingUp) {
+            this._hideLanding();
+            this._controls._searchController?.reset?.();
+            return Clutter.EVENT_STOP;
+        }
+        if (this._library?.room) {
+            this._library.closeRoom();
+            return Clutter.EVENT_STOP;
+        }
         const text = Main.overview.searchEntry?.clutter_text ?? null;
-        if (symbol === Clutter.KEY_Escape && this._forced && !text?.has_key_focus()) {
+        if (this._forced && !text?.has_key_focus()) {
             Main.overview.hide();
             return Clutter.EVENT_STOP;
         }
         return Clutter.EVENT_PROPAGATE;
+    }
+
+    // ------------------------------------------------------------------
+    // The search page before anything is typed
+    // ------------------------------------------------------------------
+    // Apple Music's own search page opens on what it offers before a
+    // letter is typed — recent picks, categories to browse — and so does
+    // ours: the keyboard in the empty entry, by a click or a Tab, puts the
+    // page (landingView.js) in the library's place in the slot, where the
+    // shell's results would go. Up, it stays up for the keyboard leaving
+    // the entry for nowhere — the shell's own click-away lets the keyboard
+    // go on any press outside the entry (searchController.js
+    // `_maybeCancelSearch`), a press on the page's own tiles included —
+    // and for a search typed and cleared again, as Apple's does; it goes
+    // for the keyboard moving to anything but the page itself, for a press
+    // outside the page and the entry (_onCapturedPress), for Escape
+    // (_onCapturedKey), and with the view. Judged off an idle rather than
+    // on the focus change itself: a letter typed from the desktop focuses
+    // the entry and fills it in one go, and by the idle both have settled.
+    // With a search up nothing changes: the shell has the slot faded out,
+    // and whether the page or the tab comes back is settled as the search
+    // ends (`search-active`, enable).
+    _queueLandingSync() {
+        if (this._landingIdle || !this._appsBox)
+            return;
+        this._landingIdle = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._landingIdle = 0;
+            this._syncLanding();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _syncLanding() {
+        if (this._controls?._searchController?.searchActive)
+            return;
+        const text = Main.overview.searchEntry?.clutter_text ?? null;
+        const focus = global.stage.get_key_focus();
+        const onPage = this._landingUp && (!focus || this._landing.actor.contains(focus));
+        const wanted = this.isShowing && !!this._library && !!text && !text.text &&
+            (focus === text || onPage);
+        if (wanted)
+            this._showLanding();
+        else
+            this._hideLanding();
+    }
+
+    // A press outside the page and the entry, seen ahead of everything:
+    // the page goes, as a popover would, where the shell's own click-away
+    // only lets the keyboard go. The press itself goes on to whatever it
+    // was for.
+    _onCapturedPress(event) {
+        const type = event.type();
+        if (type !== Clutter.EventType.BUTTON_PRESS && type !== Clutter.EventType.TOUCH_BEGIN)
+            return Clutter.EVENT_PROPAGATE;
+        if (!this._landingUp || Main.modalCount > 1)
+            return Clutter.EVENT_PROPAGATE;
+        const target = global.stage.get_event_actor(event);
+        if (target && (this._landing.actor.contains(target) || Main.overview.searchEntry?.contains(target)))
+            return Clutter.EVENT_PROPAGATE;
+        this._hideLanding();
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    _showLanding() {
+        if (this._landingUp || !this._library)
+            return;
+        if (!this._landing) {
+            const [width, height] = this._box ?? this._slotSize();
+            this._landing = new LandingView({
+                width,
+                height,
+                recents: this._recents,
+                onActivate: item => this._onSearchPick?.(item),
+                onCategory: category => this._openCategory(category),
+                onOpenSettings: this._onOpenSettings,
+            });
+            this._landing.actor.hide();
+            this._appDisplay.add_child(this._landing.actor);
+        }
+        this._landingUp = true;
+        this._library.actor.hide();
+        this._landing.refresh();
+        this._landing.actor.show();
+    }
+
+    _hideLanding() {
+        if (!this._landingUp)
+            return;
+        this._landingUp = false;
+        this._landing?.actor.hide();
+        this._library?.actor.show();
+    }
+
+    // A category picked on the page: its shelves, once the engine has
+    // answered for them (the app asks), as a room in the tabs' place. The
+    // keyboard is let go of first, or the page would come straight back
+    // for it (_syncLanding).
+    async _openCategory(category) {
+        const page = await this._onCategory?.(category);
+        if (!page || !this._library || !this.isShowing)
+            return;
+        global.stage.set_key_focus(null);
+        this._hideLanding();
+        this._library.openRoom(page);
     }
 
     // ------------------------------------------------------------------
@@ -460,7 +611,7 @@ export class MediaMenu {
     // and answers such a search from its first letter, with word of an
     // engine that is down where it would otherwise keep quiet.
     _takeSearch() {
-        if (!this._provider)
+        if (!this._search)
             return;
         const results = this._controls._searchController?._searchResults ?? null;
         if (typeof results?._doProviderSearch !== 'function') {
@@ -469,7 +620,7 @@ export class MediaMenu {
         }
         const menu = this;
         this._restoreSearch = wrapMethod(results, '_doProviderSearch', (through, live) => function (provider, previousResults) {
-            if (live() && menu._exclusive && provider !== menu._provider) {
+            if (live() && menu._exclusive && !menu._search.owns(provider)) {
                 // As the shell's own `_reset` leaves a provider's display:
                 // its rows gone, hidden, and any metas still coming let go.
                 provider.display?.clear();
@@ -483,8 +634,8 @@ export class MediaMenu {
         if (exclusive === this._exclusive)
             return;
         this._exclusive = exclusive;
-        if (this._provider)
-            this._provider.exclusive = exclusive;
+        if (this._search)
+            this._search.exclusive = exclusive;
     }
 
     // ------------------------------------------------------------------
@@ -494,6 +645,8 @@ export class MediaMenu {
     _show(showing) {
         if (!this._appsBox)
             return;
+        if (!showing)
+            this._hideLanding();
         if (showing !== this._showing) {
             // Built against the slot as it stands, before the fold moves it.
             const library = showing ? this._view() : null;
@@ -584,6 +737,9 @@ export class MediaMenu {
     }
 
     _dropView() {
+        this._landingUp = false;
+        this._landing?.destroy();
+        this._landing = null;
         this._library?.destroy();
         this._library = null;
         this._box = null;

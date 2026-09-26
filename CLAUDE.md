@@ -44,15 +44,21 @@ position is reckoned off the monotonic clock in between.
 `library.js` only reads `library.json`; `am.py sync` is the only writer.
 `shelfView.js` builds Listen Now shelves as one-row instances of the same
 grid view the tabs use, so they page and focus like everything else.
-`searchProvider.js` is Apple Music in the shell's own overview search, one
-provider beside the system's others. While the menu is up in the overview
-a search is Apple Music's alone: typing runs the shell's search exactly as
-it runs over the app grid — the menu fades out under the results and comes
-back when the search ends — but `mediaMenu.js` wraps the results view's
-`_doProviderSearch` so only that provider is asked, the others' displays
-cleared, for as long as the search that began with the menu up lasts. The
-provider is told (`exclusive`) and answers such a search from the first
-letter, with a row of its own when the engine is down or not signed in.
+`searchProvider.js` is Apple Music in the shell's own overview search:
+among every provider on the system it is one section, "Apple Music".
+While the menu is up in the overview a search is Apple Music's alone —
+typing runs the shell's search exactly as it runs over the app grid, the
+menu fading out under the results, but `mediaMenu.js` wraps the results
+view's `_doProviderSearch` so only Apple Music's providers are asked — and
+it is laid out as Apple Music's own search box lays its answers out, one
+provider per section: Top Results as a row of five icons, Apple's
+completions of the typed term (`am.py suggest`, picked they are the next
+search), then Artists, Albums, Songs, Playlists, Music Videos, Stations.
+One `am.py search` serves them all. Before anything is typed, the keyboard
+in the empty entry puts Apple Music's search page in the menu's place
+(`landingView.js`): "Recently Searched" (`recents.js`, what was picked out
+of searches) and "Browse Categories" (`am.py landing`); a category opens
+as a room (`libraryView.js` `openRoom`), its shelves from `am.py category`.
 
 ## Settings
 

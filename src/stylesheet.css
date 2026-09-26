@@ -790,3 +790,130 @@
     font-style: italic;
     color: rgba(250, 250, 251, 0.5);
 }
+
+/* === Search (searchProvider.js, landingView.js) === */
+
+/* A hit's picture in the shell's own results, and on a recent pick's card:
+ * the stand-in's tile until the cover is on disk. */
+.mm-search-art {
+    background-color: rgba(250, 250, 251, 0.08);
+    color: rgba(250, 250, 251, 0.7);
+}
+
+/* The search page before anything is typed: one box of the shell's own
+ * results' shape and shade (.search-section-content in gnome-shell.css),
+ * the results' width, under the entry. */
+.mm-landing-scroll {
+    -st-vfade-offset: 24px;
+}
+
+/* Padding is landingView.js's BOX_PADDING — keep in step. */
+.mm-landing {
+    background-color: #38383b;
+    color: #fafafb;
+    border-radius: 24px;
+    padding: 18px;
+    spacing: 24px;
+    margin-bottom: 24px;
+}
+
+.mm-landing-section {
+    spacing: 12px;
+}
+
+.mm-landing-header {
+    spacing: 12px;
+}
+
+.mm-landing-title {
+    font-size: 1.23em;
+    font-weight: 800;
+    color: #fafafb;
+}
+
+.mm-landing-hint {
+    font-size: 0.95em;
+    color: rgba(250, 250, 251, 0.65);
+}
+
+.mm-landing-clear {
+    font-size: 0.886em;
+    font-weight: bold;
+    color: -st-accent-color;
+    padding: 4px 10px;
+    border-radius: 9999px;
+}
+
+.mm-landing-clear:hover {
+    color: st-lighten(-st-accent-color, 15%);
+    background-color: st-transparentize(-st-accent-color, 0.88);
+}
+
+.mm-landing-clear:focus {
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+/* Spacing is landingView.js's GAP — keep in step. */
+.mm-landing-row {
+    spacing: 12px;
+}
+
+/* A recent pick: its cover, its title, and what it is. */
+.mm-recent-card {
+    background-color: rgba(250, 250, 251, 0.06);
+    border-radius: 13px;
+    padding: 8px 10px;
+}
+
+.mm-recent-card:hover {
+    background-color: rgba(250, 250, 251, 0.1);
+}
+
+.mm-recent-card:focus {
+    background-color: rgba(250, 250, 251, 0.1);
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+.mm-recent-card:active {
+    background-color: rgba(250, 250, 251, 0.14);
+}
+
+.mm-recent-card-content {
+    spacing: 10px;
+}
+
+.mm-recent-card-text {
+    spacing: 1px;
+}
+
+.mm-recent-title {
+    font-weight: bold;
+    color: #fafafb;
+}
+
+.mm-recent-subtitle {
+    font-size: 0.886em;
+    color: #afafb1;
+}
+
+/* A category: its own colour and picture come inline (landingView.js
+ * `_paint`), its name in the corner. */
+.mm-category {
+    background-color: #5e5e62;
+}
+
+.mm-category:hover {
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.mm-category:focus {
+    box-shadow: inset 0 0 0 2px st-transparentize(st-mix(-st-accent-color, #ffffff, 60%), 0.2);
+}
+
+.mm-category-title {
+    font-size: 1.05em;
+    font-weight: 800;
+    color: #ffffff;
+    text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.7);
+    padding: 10px 12px;
+}

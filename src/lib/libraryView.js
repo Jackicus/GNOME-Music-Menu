@@ -14,12 +14,19 @@
 // shelves that are each a one-row grid of the same tiles, and it answers the
 // same few methods a grid does (`focusFirst`, `atTopRow`, `pageBy`, `tileFor`)
 // on their behalf. The empty state answers none, so they are asked with `?.`.
+//
+// A room (`openRoom`) is a page of the same kind in the tabs' place rather
+// than under one of them — a category picked on the search page
+// (landingView.js), its shelves as Apple lays them out — with the header
+// in its detail mode, the room's name over a Back; Back, or a tab chosen,
+// brings the tab that was on show back.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 
 import {ensureStyleDeep} from './anim.js';
+import {sectionKeyForKind} from './library.js';
 import {createMediaView} from './mediaGrid.js';
 import {ShelfView} from './shelfView.js';
 import {createEmptyState, createHeader, createIconButton} from './widgets.js';
@@ -55,6 +62,8 @@ export class LibraryView {
         this._pages = new Map();
         this._prebuildIdle = 0;
         this._key = this._sectionFor(active)?.key ?? null;
+        // The room up in the tabs' place, if one is: its shelves and name.
+        this._room = null;
         // The player bar's slot, between the tabs and the grid — where the
         // app grid keeps its row of workspaces — and how much height it
         // takes off every page's budget.
@@ -80,7 +89,14 @@ export class LibraryView {
                 this.show(key);
                 this._onSwitch?.(key);
             },
-            onBack,
+            // Back is the room's way out while one is up; otherwise the
+            // host's, for whatever it put over the library.
+            onBack: () => {
+                if (this._room)
+                    this.closeRoom();
+                else
+                    onBack?.();
+            },
             end: [...(end ?? []), this._syncButton],
         });
         this.actor.add_child(this.header.actor);
@@ -121,13 +137,18 @@ export class LibraryView {
         return this._key;
     }
 
-    // Its grid or shelf, or null when it has nothing in it.
+    // Its grid or shelf — or the room, while one is up — or null when it
+    // has nothing in it.
     get currentView() {
+        if (this._room)
+            return this._room.view;
         return this._pages.get(this._key)?.view ?? null;
     }
 
-    // `key`'s tab, or the one showing when there is no such section.
+    // `key`'s tab, or the one showing when there is no such section. A
+    // room up is over: a tab chosen is the way out of it.
     show(key, {reveal = false} = {}) {
+        this.closeRoom();
         this._key = this._sectionFor(key)?.key ?? this._key;
         if (!this._key)
             return;
@@ -200,19 +221,75 @@ export class LibraryView {
             return;
         this._barHeight = height;
         // Pages built against the old height are built again; none yet is
-        // the usual case, `show` having asked before its first.
-        if (!this._pages.size)
+        // the usual case, `show` having asked before its first. A room up
+        // is built again against the new one too.
+        if (!this._pages.size && !this._room)
             return;
+        const room = this._room?.page ?? null;
+        this.closeRoom();
         for (const page of this._pages.values())
             page.actor.destroy();
         this._pages.clear();
         if (this._key)
             this.show(this._key);
+        if (room)
+            this.openRoom(room);
     }
 
-    // Where the keyboard starts: the grid's first tile on show, or, with
-    // nothing in the section, whatever the empty state offers.
+    // ------------------------------------------------------------------
+    // A room
+    // ------------------------------------------------------------------
+    // `page` is `{title, shelves}`, the shelves as library.json has Listen
+    // Now's: one row of tiles each, in the tabs' place, under the room's
+    // name and over a Back. Its tiles open as a shelf's do, against the
+    // tab their kind belongs with.
+    openRoom(page) {
+        this.closeRoom();
+        if (!this._pages.size)
+            this._measureBar();
+        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        const section = {key: 'room', title: page.title, icon: 'folder-music-symbolic', aspect: 1.0, shelves: true};
+        const view = new ShelfView({
+            section,
+            shelves: page.shelves ?? [],
+            width: this._width,
+            height: this._height - HEADER_ALLOWANCE * scale - this._barHeight,
+            columns: this._columns,
+            rows: this._rows,
+            onActivate: (_key, item, tile) => this._onActivate(sectionKeyForKind(item.kind), item, tile),
+            onContextMenu: this._onContextMenu,
+            fetchArt: true,
+        });
+        this.stack.add_child(view.actor);
+        for (const other of this._pages.values())
+            other.actor.visible = false;
+        this._room = {page, view};
+        this.header.setDetailMode(page.title, true);
+    }
+
+    // The tab that was on show, back.
+    closeRoom() {
+        if (!this._room)
+            return;
+        const {view} = this._room;
+        this._room = null;
+        view.destroy();
+        this.header.setLibraryMode(true);
+        const page = this._pages.get(this._key);
+        if (page)
+            page.actor.visible = true;
+    }
+
+    get room() {
+        return this._room?.page ?? null;
+    }
+
+    // Where the keyboard starts: the grid's first tile on show — or the
+    // room's — or, with nothing in the section, whatever the empty state
+    // offers.
     focusFirst() {
+        if (this._room)
+            return this._room.view.focusFirst();
         const page = this._pages.get(this._key);
         if (page?.view?.focusFirst)
             return page.view.focusFirst();
@@ -297,13 +374,13 @@ export class LibraryView {
     // Back button then leads down into that. A shelf has no top row of its
     // own to step up from, so it simply does not answer `atTopRow`.
     _onKeyPress(event) {
-        const page = this._pages.get(this._key);
-        if (!page?.actor.visible)
+        if (!this._room && !this._pages.get(this._key)?.actor.visible)
             return Clutter.EVENT_PROPAGATE;
-        const view = page.view;
+        const view = this.currentView;
         const focus = global.stage.get_key_focus();
         const symbol = event.get_key_symbol();
-        if (symbol === Clutter.KEY_Up && view?.atTopRow?.(focus))
+        // A room has no tabs lit to go up to.
+        if (symbol === Clutter.KEY_Up && !this._room && view?.atTopRow?.(focus))
             return this.header.focusTabs() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
         if (symbol === Clutter.KEY_Down && focus && this.header.actor.contains(focus) && view?.focusFirst)
             return view.focusFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;

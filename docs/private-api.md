@@ -30,6 +30,8 @@ Apple Music endpoints).
 | `controls._searchController`, `.searchActive` | mediaMenu.js | Workspaces do not reappear for a search while the menu is up | No, optional-chained |
 | `Main.overview.searchController.addProvider(provider)` | searchProvider.js | Apple Music results simply never appear in the overview's search; nothing throws | No — a public getter and method, but not a documented extension API, see below |
 | `controller._searchResults._doProviderSearch` (wrapped), `provider.display.clear()` | mediaMenu.js | A search with the menu up asks every provider on the system, not Apple Music's alone | Yes — a warning once, and the search is the shell's own |
+| `Search.ListSearchResult` (instantiated; its `activate` replaced on the instance), `controller._searchResults` handed to it | searchProvider.js | A suggestion picked closes the overview as any result does, instead of becoming the next search | No — `ListSearchResult` is exported; a rename throws at the first suggestion shown |
+| `Main.overview.searchEntry` (`.text`, `.clutter_text`), `Main.overview.searchController.reset()` | searchProvider.js, mediaMenu.js | A suggestion picked does not fill the entry; Escape on the search page leaves the keyboard in the entry | Yes, optional-chained |
 | `ProviderInfo.animateLaunch()` calling `Shell.AppSystem.lookup_app(appInfo.get_id())` | searchProvider.js | A click on the "Apple Music" heading over the results throws inside the shell's own handler | Yes — `get_id()` names `org.gnome.Shell.Extensions.desktop`, which the shell ships |
 | `controls._stateAdjustment` | mediaMenu.js | The workspace row is not folded/unfolded in step with the overview's own transition | No, optional-chained |
 | `controls.layout_manager._getAppDisplayBoxForState` (wrapped) | mediaMenu.js | The slot is never grown for the shelves/grid above the workspace row | Yes, guarded and chain-safe |
@@ -146,13 +148,43 @@ still the outermost, and on disable restores the previous only if it is —
 the same pattern as `_getAppDisplayBoxForState` below — and a wrap left in
 someone else's chain calls straight through.
 
+**The sections.** Apple Music's own layout of a search — an icon row of
+Top Results, the completions, a list per kind — is nothing but several
+providers registered in that order (searchProvider.js `MusicSearch`), each
+a section of the shell's own results view: one without an `appInfo` for
+the icon row (a `GridSearchResults`, as the shell's own Applications
+section is, with `maxResults` read by `GridSearchResults._init`), the rest
+with one for the heading. The completions' rows are the shell's own
+`Search.ListSearchResult`, exported, constructed by the provider's
+`createResultObject(meta)` — the one hook a provider has over its rows —
+with `controller._searchResults` handed to it as the results view every
+row is built with, and `activate` replaced on the instance: the shell's
+own `SearchResult.activate()` ends with `Main.overview.toggle()`, and a
+completion picked is the next search, not a pick. It fills the entry
+(`Main.overview.searchEntry.text`), which is what the shell itself does for
+every keystroke.
+
+**The search page.** Before anything is typed, the keyboard in the empty
+entry puts a page of ours in the app display's slot in the library's
+place (mediaMenu.js `_syncLanding`, landingView.js): a second child of
+`controls.appDisplay` beside the library's, the same way. It is judged off
+`global.stage`'s `notify::key-focus`, on an idle, and taken away by a press
+outside it (`captured-event::button`/`::touch`, the press target from
+`global.stage.get_event_actor`), by Escape (`captured-event::key`, ahead of
+the shell's own Escape, which would step the app grid down), and with the
+view. Escape also calls the search controller's `reset()`, the shell's own
+way of letting the keyboard out of the entry, so the page does not come
+straight back for it.
+
 **If it changes.** `_searchController`, `_searchResults` or
 `_doProviderSearch` missing logs one warning and leaves the search the
 shell's own: typing with the menu up asks every provider, Apple Music's
 among them, as anywhere else in the overview. A shell that stops asking
 providers through `_doProviderSearch` does the same. `display.clear()`
 missing on a provider's display leaves that provider's old rows standing
-until the shell's own reset clears them.
+until the shell's own reset clears them. `ListSearchResult` renamed throws
+at the first search with the menu up, from inside the shell's own
+`_ensureResultActors` — caught there and logged, the section left empty.
 
 ## The app grid (mediaGrid.js)
 

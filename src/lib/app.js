@@ -61,7 +61,8 @@ import {Player} from './player.js';
 import {PlayerBar} from './playerBar.js';
 import {NowPlayingView} from './nowPlaying.js';
 import {openItemMenu} from './itemMenu.js';
-import {MusicSearchProvider} from './searchProvider.js';
+import {MusicSearch} from './searchProvider.js';
+import {Recents} from './recents.js';
 import {notifyFailure} from './notify.js';
 import * as amctl from './amctl.js';
 
@@ -186,8 +187,10 @@ export class MusicMenuApp {
         // library's detail pane is not on the surface.
         this._nowPlayingView = null;
         this._nowPlayingPanel = null;
-        // The overview's search entry, backed by am.py search.
-        this._searchProvider = null;
+        // Apple Music in the overview's search, and what was picked out of
+        // it, for the search page's "Recently Searched".
+        this._search = null;
+        this._recents = null;
         this._syncTimer = 0;
         // The sync under way, if one is: a second ask joins it.
         this._syncing = null;
@@ -214,12 +217,14 @@ export class MusicMenuApp {
         this._player = new Player();
         this._player.connectObject('changed', () => this._syncNowPlayingTrack(), this);
         this._syncPlayerBar();
-        this._searchProvider = new MusicSearchProvider({
+        this._recents = new Recents();
+        this._search = new MusicSearch({
             onActivate: item => this._activateSearchResult(item),
             onOpenSettings: () => this._openSettings(),
             gicon: this._button.gicon,
+            recents: this._recents,
         });
-        this._searchProvider.register();
+        this._search.register();
         this._sections = loadLibrary();
         this._build();
         this._scheduleSync();
@@ -328,8 +333,9 @@ export class MusicMenuApp {
         this._picked = this._origin = null;
         this._keepOnly(new Set());
         this._sections = {};
-        this._searchProvider?.unregister();
-        this._searchProvider = null;
+        this._search?.unregister();
+        this._search = null;
+        this._recents = null;
         this._nowPlayingPanel?.destroy();
         this._nowPlayingPanel = null;
         this._nowPlayingView?.destroy();
@@ -830,12 +836,12 @@ export class MusicMenuApp {
     // A "modal" pane wants the desktop to itself, so the browser goes first
     // (the popup hides the overview itself).
     //
-    // A song on a tile — a shelf's; nothing else puts one there — has no
-    // pane to open: picked, it plays, as it does on Apple Music's own
-    // pages. The browser stays up, as it does for a row's play.
+    // A song or a music video on a tile — a shelf's; nothing else puts one
+    // there — has no pane to open: picked, it plays, as it does on Apple
+    // Music's own pages. The browser stays up, as it does for a row's play.
     _openPicked(key, item, tile) {
-        if (item.kind === 'song') {
-            amctl.run(['play', 'song', item.id]).catch(notifyFailure);
+        if (item.kind === 'song' || item.kind === 'video') {
+            amctl.run(['play', item.play?.kind ?? 'song', item.id]).catch(e => notifyFailure(e, 'play'));
             return;
         }
         if (this._dialog) {
@@ -1128,10 +1134,16 @@ export class MusicMenuApp {
             amctl.fire(['engine', 'start']);
     }
 
-    // A result picked in the overview's search: a groupless item (no track
-    // list yet) is filled in first, then shown as any other pick — popped up,
-    // or on the surface's pane, whichever `detail-opens-in` says.
+    // A result picked in the overview's search, or a recent one on its
+    // page: a song or a music video plays, as it does on Apple Music's own
+    // page; anything else, a groupless item (no track list yet), is filled
+    // in first, then shown as any other pick — popped up, or on the
+    // surface's pane, whichever `detail-opens-in` says.
     async _activateSearchResult(item) {
+        if (item.kind === 'song' || item.kind === 'video') {
+            amctl.run(['play', item.play?.kind ?? 'song', item.id]).catch(e => notifyFailure(e, 'play'));
+            return;
+        }
         let full = item;
         if (!item.groups) {
             try {
@@ -1149,6 +1161,20 @@ export class MusicMenuApp {
         }
         if (this._detailOnSurface())
             this._showDetail(key, full);
+    }
+
+    // A category picked on the search page: its page from the engine
+    // (`am.py category`), for the menu to open as a room — or null, and
+    // the failure said. Never starts the engine: the page that offered
+    // the category came from it running.
+    async _loadCategory(category) {
+        try {
+            const page = await amctl.run(['--no-start', 'category', category.id]);
+            return {title: page.title || category.title, shelves: Array.isArray(page.shelves) ? page.shelves : []};
+        } catch (e) {
+            notifyFailure(e, 'category');
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1208,7 +1234,10 @@ export class MusicMenuApp {
                 onOpenSettings: () => this._openSettings(),
                 onSync: () => this._runSync(),
                 playerBar: this._playerBar?.actor ?? null,
-                searchProvider: this._searchProvider,
+                search: this._search,
+                recents: this._recents,
+                onSearchPick: item => this._activateSearchResult(item),
+                onCategory: category => this._loadCategory(category),
             });
             this._browser.enable();
         }
