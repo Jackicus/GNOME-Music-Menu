@@ -34,6 +34,15 @@
 // The engine is never started for a search: typing in the overview must not
 // launch Chrome. Apple Music answers once it is running — the library's
 // button starts it — and stays quiet otherwise.
+//
+// With the library up in the overview a search is Apple Music's alone
+// (mediaMenu.js holds `exclusive` for as long as one is), and this
+// provider answers it differently in two ways: from the first letter
+// rather than the third, since the search is for Apple Music and nothing
+// else; and with a row of its own where the engine cannot answer — down,
+// or not signed in — where a search among every provider keeps quiet and
+// leaves the others to it. Picking that row is the way to put it right:
+// the engine started, or Settings opened.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -42,17 +51,44 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {run} from './amctl.js';
+import {SIGN_IN_HINT} from './library.js';
 import {notifyFailure} from './notify.js';
 import {cacheRemoteArt} from './playerUtil.js';
 
+// Among every provider, nothing before the third letter: a letter or two
+// is anyone's, and a search is a process and a round trip to Chrome.
 const MIN_CHARS = 3;
 const RESULT_LIMIT = 12;
 const DEBOUNCE_MS = 250;
 
+// The rows a search of Apple Music's alone answers with when the engine
+// cannot, by the error `am.py` gives, under ids no item has.
+const STATUS_PREFIX = 'music-menu:';
+const STATUS = {
+    'engine-down': {
+        name: 'Apple Music is not running',
+        description: 'Choose this to start it, or press Sync in the library',
+        icon: 'network-offline-symbolic',
+    },
+    'not-signed-in': {
+        name: 'Not signed in',
+        description: SIGN_IN_HINT,
+        icon: 'avatar-default-symbolic',
+    },
+};
+
+function statusCode(id) {
+    return id.startsWith(STATUS_PREFIX) ? id.slice(STATUS_PREFIX.length) : null;
+}
+
 export class MusicSearchProvider {
-    // `gicon` is the library's own icon, for the heading over the results.
-    constructor({onActivate, gicon}) {
+    // `gicon` is the library's own icon, for the heading over the results;
+    // `onOpenSettings` is where the not-signed-in row goes.
+    constructor({onActivate, onOpenSettings = null, gicon}) {
         this._onActivate = onActivate;
+        this._onOpenSettings = onOpenSettings;
+        // Whether the search up is Apple Music's alone (see the file header).
+        this.exclusive = false;
         this.id = 'apple-music';
         this.isRemoteProvider = false;
         // There is nowhere of ours to send "show more" to but Apple Music's
@@ -97,10 +133,12 @@ export class MusicSearchProvider {
     // pending call is dropped in favour of the newest terms, and cancelling
     // (the search superseded, or the overview closing) resolves to no
     // results instead of rejecting, so nothing gets logged as a provider
-    // error over what is just a keystroke arriving late.
+    // error over what is just a keystroke arriving late. Whether the search
+    // is Apple Music's alone is taken as it is asked, before the pause.
     _search(terms, cancellable) {
         const query = terms.join(' ').trim();
-        if (query.length < MIN_CHARS)
+        const exclusive = this.exclusive;
+        if (!query || (!exclusive && query.length < MIN_CHARS))
             return Promise.resolve([]);
 
         this._cancelDebounce();
@@ -125,7 +163,10 @@ export class MusicSearchProvider {
                         }
                         resolve(ids);
                     })
-                    .catch(() => resolve([]));
+                    .catch(e => {
+                        const code = e?.code ?? '';
+                        resolve(exclusive && Object.hasOwn(STATUS, code) ? [STATUS_PREFIX + code] : []);
+                    });
                 return GLib.SOURCE_REMOVE;
             });
         });
@@ -147,6 +188,15 @@ export class MusicSearchProvider {
 
     getResultMetas(ids) {
         const metas = ids.map(id => {
+            const status = STATUS[statusCode(id)];
+            if (status) {
+                return {
+                    id,
+                    name: status.name,
+                    description: status.description,
+                    createIcon: size => new St.Icon({icon_name: status.icon, icon_size: size}),
+                };
+            }
             const item = this._items.get(id);
             if (!item)
                 return {id, name: id, description: '', createIcon: () => null};
@@ -227,6 +277,15 @@ export class MusicSearchProvider {
     }
 
     activateResult(id) {
+        const code = statusCode(id);
+        if (code === 'engine-down') {
+            run(['engine', 'start']).catch(notifyFailure);
+            return;
+        }
+        if (code === 'not-signed-in') {
+            this._onOpenSettings?.();
+            return;
+        }
         const item = this._items.get(id);
         if (!item)
             return;

@@ -22,10 +22,9 @@ view. No paid app, no developer account — it drives Apple's own web player.
 - **A player bar** under the grid shows what's playing, with transport
   controls and a scrubber. Open it into a full **Now Playing** view — big
   art, lyrics, and the Up Next queue.
-- **Search from the overview.** With the menu open, GNOME's own search bar
-  is Apple Music's: type, and the tabs give way to Top Results, Artists,
-  Songs, Albums, Playlists and Stations, laid out as Apple Music lays them.
-  Anywhere else in the overview, Apple Music answers alongside your apps.
+- **Search from the overview.** Type in GNOME's own search and Apple Music's
+  catalogue and your library answer alongside your apps. With the menu
+  open, the same search is Apple Music's alone: only its results show.
 - **Right-click actions.** Play Next, Play Later, love/unlove, add to library
   or a playlist, copy link — on a tile or a track row.
 - **Remote or controller.** Map a TV remote's keys or a game controller's

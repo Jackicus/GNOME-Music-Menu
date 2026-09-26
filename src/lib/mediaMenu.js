@@ -26,13 +26,12 @@
 // transitions, rather than two views drawn over each other.
 //
 // What is ours here: the workspaces row above the grid is folded away while
-// the view is up, so the posters get its room. And the shell's own search
-// entry, while the view is up, is Apple Music's: what is typed into it goes
-// to a search page in the tabs' place (libraryView.js, searchView.js) and
-// to none of the shell's providers, and the view stays where it is instead
-// of fading out under the shell's results. The entry itself — its clear
-// icon, its focus, its Escape — stays the shell's, and it is the shell's
-// entirely whenever the view is not what the overview shows.
+// the view is up, so the posters get its room. And the shell's own search,
+// begun with the view up, is put to Apple Music's provider and to no other:
+// typing runs the search exactly as it runs over the app grid — the view
+// fades out under the results and comes back as the search ends — but only
+// Apple Music answers. Everywhere else in the overview the search is the
+// shell's own, Apple Music one provider among the rest (searchProvider.js).
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -77,8 +76,10 @@ function wrapMethod(object, name, make) {
 export class MediaMenu {
     // `button` is the library's button beside Show Apps, which the app holds
     // and hands to whichever place the library opens in; `onSwitch` hears of
-    // a tab chosen here.
-    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null}) {
+    // a tab chosen here. `searchProvider` is Apple Music's own provider in
+    // the shell's search (searchProvider.js), the one a search begun with
+    // the view up is put to.
+    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null, searchProvider = null}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._onActivate = onActivate;
@@ -88,6 +89,7 @@ export class MediaMenu {
         this._button = button;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
+        this._provider = searchProvider;
         // The player bar (app.js), reattached to every LibraryView this menu
         // builds — a resize drops and rebuilds the view, but the bar itself
         // is a singleton for the whole extension.
@@ -105,8 +107,9 @@ export class MediaMenu {
         // Whether the overview that is up is one our button opened.
         this._forced = false;
         this._keyId = 0;
-        // The shell's search entry, and what puts its controller back.
-        this._entry = null;
+        // Whether the search up is Apple Music's alone (see _takeSearch),
+        // and what puts the shell's results view back.
+        this._exclusive = false;
         this._restoreSearch = null;
         // The tab to open onto once the overview has gone down, when another
         // extension's view was up in the slot (see the top of this file).
@@ -155,8 +158,11 @@ export class MediaMenu {
                 Main.overview.hide();
         }, this);
 
-        // The end of a search shows the workspaces again, whatever is up.
+        // A search begun with the view up is Apple Music's alone, until it
+        // ends (_takeSearch). And the end of one shows the workspaces again,
+        // whatever is up.
         this._controls._searchController?.connectObject('notify::search-active', controller => {
+            this._setExclusive(controller.searchActive && this.isShowing);
             if (!controller.searchActive && this._showing)
                 this._syncWorkspaces(true);
         }, this);
@@ -220,11 +226,9 @@ export class MediaMenu {
         if (this._keyId)
             global.stage.disconnect(this._keyId);
         this._keyId = 0;
-        for (const restore of this._restoreSearch ?? [])
-            restore();
+        this._restoreSearch?.();
         this._restoreSearch = null;
-        this._entry?.clutter_text.disconnectObject(this);
-        this._entry = null;
+        this._setExclusive(false);
         if (this._reopenId)
             GLib.source_remove(this._reopenId);
         this._reopenId = 0;
@@ -418,36 +422,17 @@ export class MediaMenu {
     // and of St's focus manager, which takes the arrows in the capture
     // phase before any view of ours. Only with the view up, and never over
     // a popup (an item's menu) or the shell's own search, which keep their
-    // own keys:
-    //  - with a search up, Escape ends it, where the shell's would step the
-    //    app grid down (and take a forced overview with it), and Up off the
-    //    top row of its results goes back to the entry, where St would go
-    //    looking for a tab;
-    //  - in an overview our button opened, Escape closes it whole — the
-    //    desktop is where it was opened from — where the shell's would only
-    //    step down to the window picker. Not with the keyboard in an empty
-    //    entry, whose Escape is the shell's and only lets the keyboard go.
+    // own keys: in an overview our button opened, Escape closes it whole —
+    // the desktop is where it was opened from — where the shell's would
+    // only step down to the window picker. Not with the keyboard in an
+    // empty entry, whose Escape is the shell's and only lets the keyboard go.
     _onCapturedKey(event) {
         if (event.type() !== Clutter.EventType.KEY_PRESS ||
             !this._showing || !this._showAppsButton?.checked ||
             Main.modalCount > 1 || this._controls?._searchController?.searchActive)
             return Clutter.EVENT_PROPAGATE;
         const symbol = event.get_key_symbol();
-        const text = this._entry?.clutter_text ?? null;
-        if (this._library?.searching) {
-            if (symbol === Clutter.KEY_Escape) {
-                this._endSearch();
-                return Clutter.EVENT_STOP;
-            }
-            if (symbol === Clutter.KEY_Up && text) {
-                const focus = global.stage.get_key_focus();
-                if (focus && this._library.currentView?.atTopRow(focus)) {
-                    text.grab_key_focus();
-                    return Clutter.EVENT_STOP;
-                }
-            }
-            return Clutter.EVENT_PROPAGATE;
-        }
+        const text = Main.overview.searchEntry?.clutter_text ?? null;
         if (symbol === Clutter.KEY_Escape && this._forced && !text?.has_key_focus()) {
             Main.overview.hide();
             return Clutter.EVENT_STOP;
@@ -456,88 +441,50 @@ export class MediaMenu {
     }
 
     // ------------------------------------------------------------------
-    // The shell's search entry, Apple Music's while the view is up
+    // The shell's search, Apple Music's alone while the view is up
     // ------------------------------------------------------------------
-    // The entry itself, its clear icon and its focus stay the shell's; what
-    // is taken is what the typed text sets off. Two of the search
-    // controller's own methods are wrapped for that, on the instances and
-    // chain-safely (wrapMethod): `_setSearchActive(true)`, which would fade
-    // the app grid — and this view in it — out under the shell's results;
-    // and the results view's `setTerms`, which would send the words to
-    // every provider on the system, Apple Music's own among them
-    // (searchProvider.js), for a page nothing shows. Both call straight
-    // through unless the view is what the overview shows, so the entry is
-    // the shell's own everywhere else. What the text is for comes off the
-    // entry's own `text-changed`, after the shell's handler has had it.
+    // Typing with the view up runs the shell's own search, as it runs over
+    // the app grid: the entry, its clear icon, its keys, the spinner and
+    // the results are all the shell's, and the view fades out under them
+    // and back in as the search ends (overviewControls.js
+    // `_onSearchChanged`). What is ours is who answers. The results view
+    // puts a search to each of its providers in turn (search.js
+    // `_doProviderSearch`), and that is wrapped, on the instance and
+    // chain-safely (wrapMethod): a search that is Apple Music's goes to its
+    // own provider (searchProvider.js) and to no other, whose displays are
+    // cleared rather than asked — results of theirs from an earlier search
+    // would otherwise stand over Apple's. Whether a search is Apple Music's
+    // is settled as it begins, by the view being what the overview shows,
+    // and holds until it ends (`search-active`, enable), so no keystroke
+    // puts one search to two sets of providers; the provider is told too,
+    // and answers such a search from its first letter, with word of an
+    // engine that is down where it would otherwise keep quiet.
     _takeSearch() {
-        const controller = this._controls._searchController ?? null;
-        const results = controller?._searchResults ?? null;
-        this._entry = Main.overview.searchEntry ?? null;
-        if (!controller || !this._entry || typeof controller._setSearchActive !== 'function' ||
-            typeof results?.setTerms !== 'function') {
-            console.warn('[Music Menu] The overview search is not laid out as expected; the entry stays the shell\'s.');
-            this._entry = null;
+        if (!this._provider)
+            return;
+        const results = this._controls._searchController?._searchResults ?? null;
+        if (typeof results?._doProviderSearch !== 'function') {
+            console.warn('[Music Menu] The overview search is not laid out as expected; a search with the library up asks every provider.');
             return;
         }
         const menu = this;
-        this._restoreSearch = [
-            wrapMethod(controller, '_setSearchActive', (through, live) => function (active) {
-                if (active && live() && menu.isShowing)
-                    return undefined;
-                return through(this, [active]);
-            }),
-            wrapMethod(results, 'setTerms', (through, live) => function (terms) {
-                if (terms?.length && live() && menu.isShowing)
-                    return undefined;
-                return through(this, [terms]);
-            }),
-        ];
-        this._entry.clutter_text.connectObject(
-            'text-changed', () => this._onEntryText(),
-            'key-press-event', (_text, event) => this._onEntryKey(event),
-            this);
+        this._restoreSearch = wrapMethod(results, '_doProviderSearch', (through, live) => function (provider, previousResults) {
+            if (live() && menu._exclusive && provider !== menu._provider) {
+                // As the shell's own `_reset` leaves a provider's display:
+                // its rows gone, hidden, and any metas still coming let go.
+                provider.display?.clear();
+                return Promise.resolve();
+            }
+            return through(this, [provider, previousResults]);
+        });
     }
 
-    // The entry's text, at every keystroke: the search, or, emptied, the
-    // end of it.
-    _onEntryText() {
-        if (!this.isShowing || !this._library)
+    _setExclusive(exclusive) {
+        if (exclusive === this._exclusive)
             return;
-        this._library.search(this._entry.get_text());
-    }
-
-    // Keys in the entry with a search up, once the shell's own handler has
-    // passed on them (searchController.js `_onKeyPress` takes them only
-    // for a search of its own): Down or Tab into the results, Enter on the
-    // top one — as the shell's own search has them.
-    _onEntryKey(event) {
-        if (!this.isShowing || !this._library?.searching)
-            return Clutter.EVENT_PROPAGATE;
-        const view = this._library.currentView;
-        const symbol = event.get_key_symbol();
-        if (symbol === Clutter.KEY_Down || symbol === Clutter.KEY_Tab)
-            return view?.focusFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
-        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter)
-            return view?.activateFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
-        return Clutter.EVENT_PROPAGATE;
-    }
-
-    // The search ended from the keyboard: the entry emptied and let go of,
-    // which is the shell's own `reset()`; the tab comes back through the
-    // entry's `text-changed`.
-    _endSearch() {
-        const controller = this._controls?._searchController;
-        if (controller?.reset && this._entry?.get_text())
-            controller.reset();
-        else
-            this._library?.endSearch();
-    }
-
-    // The entry emptied — the view going, a tab chosen — with the keyboard
-    // left where it is.
-    _clearEntry() {
-        if (this._entry?.get_text())
-            this._entry.text = '';
+        this._exclusive = exclusive;
+        if (this._provider)
+            this._provider.exclusive = exclusive;
     }
 
     // ------------------------------------------------------------------
@@ -547,12 +494,6 @@ export class MediaMenu {
     _show(showing) {
         if (!this._appsBox)
             return;
-        // A search up goes with the view, and the entry it came from is
-        // emptied: the shell's again, for whatever the overview shows next.
-        if (!showing && this._library?.searching) {
-            this._library.endSearch();
-            this._clearEntry();
-        }
         if (showing !== this._showing) {
             // Built against the slot as it stands, before the fold moves it.
             const library = showing ? this._view() : null;
@@ -632,9 +573,6 @@ export class MediaMenu {
             onContextMenu: this._onContextMenu,
             onSwitch: key => {
                 this._key = key;
-                // A tab chosen while searching is the end of the search
-                // (libraryView.js `show`); the entry says so too.
-                this._clearEntry();
                 this._onSwitch?.(key);
             },
             onOpenSettings: this._onOpenSettings,

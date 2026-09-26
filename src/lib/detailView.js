@@ -204,9 +204,9 @@ export class DetailView {
         if (!this.item || item?.id !== this.item.id)
             return;
         this.item = item;
-        // A cover that has arrived since the pane was built — a search
-        // hit's, fetched along with its track list (app.js `_loadGroups`)
-        // — takes the place of the placeholder drawn for it.
+        // A cover that has arrived since the pane was built — a shelf's,
+        // fetched along with its track list (app.js `_loadGroups`) — takes
+        // the place of the placeholder drawn for it.
         if (item.art && this.hero?.has_style_class_name('mm-art-placeholder'))
             this._replaceHero(item);
         this._groups = item.groups ?? [];

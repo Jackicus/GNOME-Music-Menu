@@ -44,16 +44,15 @@ position is reckoned off the monotonic clock in between.
 `library.js` only reads `library.json`; `am.py sync` is the only writer.
 `shelfView.js` builds Listen Now shelves as one-row instances of the same
 grid view the tabs use, so they page and focus like everything else.
-`searchView.js` is Apple Music's own search page, built of the same shelves
-(Top Results, Artists, Songs, Albums, Playlists, Stations): while the menu
-is up in the overview, `mediaMenu.js` takes the shell's search entry over —
-the search controller's `_setSearchActive` and its results view's `setTerms`
-are wrapped so typing neither fades the menu out nor asks the system's
-providers — and the entry's text goes to that page in the tabs' place;
-Escape, a tab, or emptying the entry brings the tab back. Outside the menu
-the entry is the shell's, with `searchProvider.js` beside its other
-providers. A song picked from a search plays; nothing else puts a song on
-a tile.
+`searchProvider.js` is Apple Music in the shell's own overview search, one
+provider beside the system's others. While the menu is up in the overview
+a search is Apple Music's alone: typing runs the shell's search exactly as
+it runs over the app grid — the menu fades out under the results and comes
+back when the search ends — but `mediaMenu.js` wraps the results view's
+`_doProviderSearch` so only that provider is asked, the others' displays
+cleared, for as long as the search that began with the menu up lasts. The
+provider is told (`exclusive`) and answers such a search from the first
+letter, with a row of its own when the engine is down or not signed in.
 
 ## Settings
 

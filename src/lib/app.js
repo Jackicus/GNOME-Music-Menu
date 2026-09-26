@@ -216,6 +216,7 @@ export class MusicMenuApp {
         this._syncPlayerBar();
         this._searchProvider = new MusicSearchProvider({
             onActivate: item => this._activateSearchResult(item),
+            onOpenSettings: () => this._openSettings(),
             gicon: this._button.gicon,
         });
         this._searchProvider.register();
@@ -829,9 +830,9 @@ export class MusicMenuApp {
     // A "modal" pane wants the desktop to itself, so the browser goes first
     // (the popup hides the overview itself).
     //
-    // A song on a tile — a search hit; nothing else puts one there — has no
+    // A song on a tile — a shelf's; nothing else puts one there — has no
     // pane to open: picked, it plays, as it does on Apple Music's own
-    // search page. The browser stays up, as it does for a row's play.
+    // pages. The browser stays up, as it does for a row's play.
     _openPicked(key, item, tile) {
         if (item.kind === 'song') {
             amctl.run(['play', 'song', item.id]).catch(notifyFailure);
@@ -1207,6 +1208,7 @@ export class MusicMenuApp {
                 onOpenSettings: () => this._openSettings(),
                 onSync: () => this._runSync(),
                 playerBar: this._playerBar?.actor ?? null,
+                searchProvider: this._searchProvider,
             });
             this._browser.enable();
         }
