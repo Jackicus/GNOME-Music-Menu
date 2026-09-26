@@ -23,6 +23,15 @@
 // when the engine does not answer — the player is somebody else's, or it is
 // down — do the player's own numbers stand in. The poll never starts an
 // engine: a player on the bus means one is running.
+//
+// The volume is the engine's own, not the system's: MusicKit's `volume`,
+// which Apple's page keeps across restarts. It rides along with each
+// `now-playing` answer and is set through `am.py volume` — one set out at a
+// time with the latest waiting behind it, so a wheel spun ten notches costs
+// two processes, not ten — and an answer asked for before the last set
+// landed is not believed about it. Another player's volume is its MPRIS
+// `Volume`, read and written on the bus. Mute is volume nought, as Apple's
+// own mute is, with the level it was at remembered here to come back to.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -51,6 +60,7 @@ const PlayerProxy = Gio.DBusProxy.makeProxyWrapper(`<node>
   <property name="Rate" type="d" access="readwrite"/>
   <property name="Metadata" type="a{sv}" access="read"/>
   <property name="Position" type="x" access="read"/>
+  <property name="Volume" type="d" access="readwrite"/>
 </interface></node>`);
 
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
@@ -63,6 +73,9 @@ const POLL_INTERVAL_US = 30 * 1000 * 1000;
 const DRIFT_US = 2 * 1000 * 1000;
 // An answer asked for this soon after our own seek may predate it.
 const SEEK_GRACE_US = 2 * 1000 * 1000;
+// Unmuting with no level remembered — the engine came up muted — lands
+// here rather than at full blast.
+const UNMUTE_FALLBACK = 0.5;
 
 // am.py and MPRIS name the modes differently; one vocabulary here.
 const REPEAT = {none: 'none', off: 'none', one: 'one', track: 'one', all: 'all', playlist: 'all'};
@@ -113,6 +126,10 @@ export class Player extends Signals.EventEmitter {
         this._pollAgain = false;
         this._polledAt = 0;
         this._seekAt = 0;
+        this._mutedFrom = null;
+        this._pendingVolume = null;
+        this._sendingVolume = false;
+        this._volumeSentAt = 0;
         this._reset();
 
         this._dbus = new DBusProxy(Gio.DBus.session, 'org.freedesktop.DBus', '/org/freedesktop/DBus',
@@ -150,6 +167,9 @@ export class Player extends Signals.EventEmitter {
             canSeek: !!track && this._lengthUs > 0,
             shuffle: this._shuffle,
             repeat: this._repeat,
+            // null until whoever is playing has said where it is.
+            volume: this._volume,
+            canVolume: this._volume !== null,
         };
     }
 
@@ -215,6 +235,7 @@ export class Player extends Signals.EventEmitter {
         this._rate = 1;
         this._shuffle = false;
         this._repeat = 'none';
+        this._volume = null;
         this._correct(0);
     }
 
@@ -274,6 +295,10 @@ export class Player extends Signals.EventEmitter {
             changed = this._setModes(shuffleOf(props.Shuffle), this._repeat) || changed;
         if ('LoopStatus' in props)
             changed = this._setModes(this._shuffle, repeatOf(props.LoopStatus)) || changed;
+        // Only another player's Volume means anything: Chrome's is a
+        // constant 1, the engine's real level being MusicKit's.
+        if ('Volume' in props && this._source === 'mpris')
+            changed = this._setVolume(props.Volume) || changed;
 
         if (changed)
             this._emit();
@@ -356,6 +381,11 @@ export class Player extends Signals.EventEmitter {
 
     _applyNowPlaying(res, askedAt) {
         let changed = this._setModes(shuffleOf(res.shuffle), repeatOf(res.repeat));
+        // The volume is the engine's whatever the track — but not from an
+        // answer asked for before the last set of ours had landed, nor
+        // while one is still out.
+        if (typeof res.volume === 'number' && this._proxy && !this._sendingVolume && askedAt >= this._volumeSentAt)
+            changed = this._setVolume(res.volume) || changed;
         // Answered after the player left the bus: nothing to fill in.
         const track = this._proxy ? res.track : null;
         if (track && !this._track && res.state !== 'stopped') {
@@ -401,11 +431,22 @@ export class Player extends Signals.EventEmitter {
 
     _adoptMpris() {
         this._source = 'mpris';
-        if (this._lengthUs !== this._mprisLengthUs) {
-            this._lengthUs = this._mprisLengthUs;
+        let changed = this._lengthUs !== this._mprisLengthUs;
+        this._lengthUs = this._mprisLengthUs;
+        const volume = this._proxy?.get_cached_property('Volume')?.recursiveUnpack();
+        if (typeof volume === 'number')
+            changed = this._setVolume(volume) || changed;
+        if (changed)
             this._emit();
-        }
         this._readPosition();
+    }
+
+    _setVolume(value) {
+        const volume = Math.max(0, Math.min(1, Number(value) || 0));
+        if (volume === this._volume)
+            return false;
+        this._volume = volume;
+        return true;
     }
 
     _setModes(shuffle, repeat) {
@@ -523,6 +564,59 @@ export class Player extends Signals.EventEmitter {
         const res = await this._run('repeat', 'cycle');
         if (res && this._setModes(shuffleOf(res.shuffle), repeatOf(res.repeat)))
             this.emit('changed');
+    }
+
+    // ------------------------------------------------------------------
+    // Volume: the level is taken at once, so the slider stays where it was
+    // let go, and sent after — one set at a time, the latest waiting behind
+    // it. Nothing is sent until whoever is playing has said where it is.
+    // ------------------------------------------------------------------
+    async setVolume(value) {
+        if (this._volume === null || this._destroyed)
+            return;
+        const volume = Math.max(0, Math.min(1, Number(value) || 0));
+        if (volume > 0)
+            this._mutedFrom = null;
+        if (this._setVolume(volume))
+            this.emit('changed');
+        this._pendingVolume = volume;
+        if (this._sendingVolume)
+            return;
+        this._sendingVolume = true;
+        try {
+            while (this._pendingVolume !== null && !this._destroyed) {
+                const next = this._pendingVolume;
+                this._pendingVolume = null;
+                await this._sendVolume(next);
+                this._volumeSentAt = GLib.get_monotonic_time();
+            }
+        } finally {
+            this._sendingVolume = false;
+        }
+    }
+
+    // Mute is volume nought, as Apple's own is (its page keeps a nought
+    // across restarts too); unmuting comes back to the level it was at, or
+    // to halfway when none was remembered.
+    toggleMute() {
+        if (this._volume === null)
+            return Promise.resolve();
+        if (this._volume > 0) {
+            this._mutedFrom = this._volume;
+            return this.setVolume(0);
+        }
+        return this.setVolume(this._mutedFrom ?? UNMUTE_FALLBACK);
+    }
+
+    async _sendVolume(volume) {
+        const proxy = this._proxy;
+        if (proxy && this._source === 'mpris') {
+            // The wrapper's setter is a Properties.Set on the bus; the
+            // player's own PropertiesChanged confirms it.
+            proxy.Volume = volume;
+            return;
+        }
+        await this._run('--no-start', 'volume', volume.toFixed(3));
     }
 
     async _run(...args) {

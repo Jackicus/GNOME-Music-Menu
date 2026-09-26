@@ -66,7 +66,8 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `item <kind> <id>` | One full item with its `groups`, for a shelf or search result picked on demand; fetches its artwork too |
 | `play <kind> <id> [--start-with N] [--shuffle]` | `{ok: true}`. kind ∈ `album playlist station song musicVideo artist` |
 | `play-next <kind> <id>`, `play-later <kind> <id>` | `{ok: true}` |
-| `control play\|pause\|toggle\|next\|previous\|stop`, `seek <sec>`, `volume <0..1>` | `{ok: true}` |
+| `control play\|pause\|toggle\|next\|previous\|stop`, `seek <sec>` | `{ok: true}` |
+| `volume <0..1>` | `{volume}` — the level as MusicKit has it after the set. It is the engine's own, not the system's; Apple's page keeps it across restarts, and a nought is a mute |
 | `shuffle on\|off\|toggle`, `repeat none\|one\|all\|cycle` | `{shuffle, repeat}` |
 | `now-playing` | `{state, track, position, duration, shuffle, repeat, volume}` |
 | `queue` | `{index, items: [Track…]}` |

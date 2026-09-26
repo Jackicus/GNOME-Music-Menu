@@ -40,7 +40,11 @@ track, but not for time: Chrome's MPRIS position and length are its media
 element's, which Apple's gapless player runs across several tracks. The
 track's own come from `am.py now-playing` (MusicKit), asked at each track
 change, play, pause and `Seeked`, and every half minute while playing; the
-position is reckoned off the monotonic clock in between.
+position is reckoned off the monotonic clock in between. The volume is
+MusicKit's own, not the system's: it rides with each `now-playing` answer,
+is set through `am.py volume` (the sets coalesced, the latest waiting behind
+the one out), and Apple's page keeps it across restarts; another player's is
+its MPRIS `Volume`. Mute is volume nought, the level remembered to come back to.
 `library.js` only reads `library.json`; `am.py sync` is the only writer.
 `shelfView.js` builds Listen Now shelves as one-row instances of the same
 grid view the tabs use, so they page and focus like everything else.

@@ -1,5 +1,5 @@
 // The full now-playing view: big art, title, artist and album, the shared
-// transport and scrubber (playerWidgets.js), and two tabs — time-synced
+// transport, scrubber and volume (playerWidgets.js), and two tabs — time-synced
 // Lyrics and the Up Next queue — each fetched from am.py when it is wanted
 // rather than kept warm. The view is built once and kept (app.js), so it is
 // mostly off screen: while unmapped it follows the track's name and art,
@@ -17,7 +17,7 @@ import * as amctl from './amctl.js';
 import {notifyFailure} from './notify.js';
 import {createLabel} from './widgets.js';
 import {findLyricIndex} from './playerUtil.js';
-import {Transport, createRemoteArt} from './playerWidgets.js';
+import {Transport, VolumeControl, createRemoteArt} from './playerWidgets.js';
 
 // A track is the same one for the queue's and lyrics' purposes if its
 // catalog id, library id and title all still agree; anything looser risks
@@ -65,6 +65,10 @@ export class NowPlayingView {
 
         this._transport = new Transport({player, large: true});
         this.actor.add_child(this._transport.actor);
+        // Under the scrubber, in the transport's own block, so the three
+        // rows sit at one spacing.
+        this._volume = new VolumeControl({player, large: true});
+        this._transport.actor.add_child(this._volume.actor);
 
         // The same pill the library's header switches sections with.
         const tabs = new St.BoxLayout({style_class: 'mm-tabs', x_align: Clutter.ActorAlign.CENTER});
@@ -254,6 +258,8 @@ export class NowPlayingView {
         this._destroyed = true;
         this._cancellable.cancel();
         this._player.disconnectObject(this);
+        // The volume's actor is the transport's child: it goes first.
+        this._volume.destroy();
         this._transport.destroy();
         this.actor.destroy();
     }

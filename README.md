@@ -20,8 +20,8 @@ view. No paid app, no developer account — it drives Apple's own web player.
   the same tabs and grid GNOME's own app folders use. Pick one and its pane
   pops up: art, title, artist, genre, year, Play/Shuffle, and its track list.
 - **A player bar** under the grid shows what's playing, with transport
-  controls and a scrubber. Open it into a full **Now Playing** view — big
-  art, lyrics, and the Up Next queue.
+  controls, a scrubber and the volume. Open it into a full **Now Playing**
+  view — big art, lyrics, and the Up Next queue.
 - **Search from the overview.** Type in GNOME's own search and Apple Music's
   catalogue and your library answer alongside your apps. With the menu
   open, the same search is Apple Music's alone, laid out as its own: Top

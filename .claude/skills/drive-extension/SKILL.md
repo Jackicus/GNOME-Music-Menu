@@ -117,7 +117,10 @@ menu and no per-section button.
   (number, title, explicit badge, duration, `•••`) with rows from y ≈ 430 in ≈ 54 px steps;
   Play (177, 562).
 - **Player bar**: a translucent bar along the bottom of the library (art, title/artist,
-  ⏮ ⏯ ⏭, scrubber, time) reflecting playback via MPRIS.
+  ⏮ ⏯ ⏭, scrubber, time) reflecting playback via MPRIS, and at its right end the
+  volume: a speaker that mutes ≈ (1104, 203) and a short slider ≈ x 1122–1198 on
+  the same line (in the `menu` library). `scroll` over either turns it; a `click`
+  on the slider lands the handle there.
 - **The `menu` library** (`library-opens-in` `menu`): the button opens the
   overview onto the tabs over the grid, in the app-grid slot. Tabs at
   y ≈ 127 (Listen Now, Albums, Artists, Playlists, Radio), grid rows centred at y ≈ 320 and
@@ -226,8 +229,13 @@ reads as "no change". `logs` hides D-Bus activation and portal chatter; `logs 20
   player is never seen there and the player bar stays on "Start Apple Music".
   `./scripts/nested.sh run python3 scripts/fake_player.py docs/screenshots/menu.jpg &`
   puts a pretend player on that bus (a track on music.apple.com, playing)
-  so the transport, the scrubber and Now Playing can be looked at. Clicking
-  the bar's left zone opens Now Playing. `pkill -f fake_player.py` when done.
+  so the transport, the scrubber, the volume and Now Playing can be looked
+    at. Clicking the bar's left zone opens Now Playing. Mind that without
+    `--demo` the nested `am.py` still reaches the *real* engine, so the
+    transport and the volume act on it — the fake player's own MPRIS
+    `Volume` is what moves only under `--clean --demo`, where no engine
+    answers. The fake player exits with the nested bus; a `pkill -f
+    fake_player.py` from a tool call kills that call's own shell too.
 - **A game controller is `scripts/vpad.py`**, a virtual Xbox 360 pad on
   uinput driven through a FIFO (`tap A`, `hat down`, `stick right 1.0`). It
   is a real device for the whole machine while it runs; `quit` it when done.

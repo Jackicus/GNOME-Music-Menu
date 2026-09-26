@@ -6,7 +6,9 @@ playing a track on music.apple.com and advances the position by itself.
 
     ./scripts/nested.sh run python3 scripts/fake_player.py [cover.jpg] &
 
-Play/Pause flips the status. Kill it when done; `nested.sh stop` does not."""
+Play/Pause flips the status; Volume is a real read-write property, so the
+volume control has something to move. Kill it when done; `nested.sh stop`
+does not."""
 import sys, time, warnings
 warnings.simplefilter("ignore", DeprecationWarning)
 from gi.repository import Gio, GLib
@@ -27,12 +29,13 @@ NODE = Gio.DBusNodeInfo.new_for_xml('''<node>
   <property name="Rate" type="d" access="read"/>
   <property name="Metadata" type="a{sv}" access="read"/>
   <property name="Position" type="x" access="read"/>
+  <property name="Volume" type="d" access="readwrite"/>
   <property name="CanGoNext" type="b" access="read"/><property name="CanGoPrevious" type="b" access="read"/>
   <property name="CanPlay" type="b" access="read"/><property name="CanPause" type="b" access="read"/>
   <property name="CanSeek" type="b" access="read"/><property name="CanControl" type="b" access="read"/>
 </interface></node>''')
 
-state = {'status': 'Playing', 'started': time.monotonic()}
+state = {'status': 'Playing', 'started': time.monotonic(), 'volume': 0.7}
 LENGTH_US = 216 * 1000 * 1000
 
 def metadata():
@@ -52,21 +55,33 @@ def get_prop(conn, sender, path, iface, name):
     if name == 'PlaybackStatus': return GLib.Variant('s', state['status'])
     if name == 'Rate': return GLib.Variant('d', 1.0)
     if name == 'Metadata': return metadata()
+    if name == 'Volume': return GLib.Variant('d', state['volume'])
     if name == 'Position':
         pos = int((time.monotonic() - state['started']) * 1e6) if state['status'] == 'Playing' else 0
         return GLib.Variant('x', min(pos, LENGTH_US))
     return GLib.Variant('b', True)
 
+def changed(conn, path, props):
+    conn.emit_signal(None, path, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                     GLib.Variant('(sa{sv}as)', ('org.mpris.MediaPlayer2.Player', props, [])))
+
 def method(conn, sender, path, iface, name, params, inv):
     if name == 'PlayPause':
         state['status'] = 'Paused' if state['status'] == 'Playing' else 'Playing'
-        conn.emit_signal(None, path, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                         GLib.Variant('(sa{sv}as)', ('org.mpris.MediaPlayer2.Player', {'PlaybackStatus': GLib.Variant('s', state['status'])}, [])))
+        changed(conn, path, {'PlaybackStatus': GLib.Variant('s', state['status'])})
     inv.return_value(None)
+
+def set_prop(conn, sender, path, iface, name, value):
+    if name != 'Volume':
+        return False
+    state['volume'] = max(0.0, min(1.0, value.unpack()))
+    print(f'volume {state["volume"]:.2f}', flush=True)
+    changed(conn, path, {'Volume': GLib.Variant('d', state['volume'])})
+    return True
 
 def on_bus(conn, name):
     for iface in NODE.interfaces:
-        conn.register_object('/org/mpris/MediaPlayer2', iface, method, get_prop, None)
+        conn.register_object('/org/mpris/MediaPlayer2', iface, method, get_prop, set_prop)
     print('fake player up', flush=True)
 
 Gio.bus_own_name(Gio.BusType.SESSION, 'org.mpris.MediaPlayer2.fakeapplemusic', Gio.BusNameOwnerFlags.NONE, on_bus, None, lambda *a: sys.exit('name lost'))

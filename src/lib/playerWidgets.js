@@ -1,10 +1,12 @@
 // What the player bar and the now-playing view have in common: the
 // transport row (shuffle, previous, play/pause, next, repeat) over a scrubber
-// with the elapsed and remaining time, and a square of cover art fetched from
-// the URL MPRIS hands over. Both follow one Player's 'changed' and 'position'
-// signals directly, so a view only places them. One set of stylesheet
-// classes (`mm-transport*`, `mm-scrubber`, `mm-time`) serves both; `large`
-// adds `mm-transport-large`, the now-playing view's size up.
+// with the elapsed and remaining time, the volume — a speaker that mutes and
+// a short slider — and a square of cover art fetched from the URL MPRIS
+// hands over. All follow one Player's 'changed' and 'position' signals
+// directly, so a view only places them. One set of stylesheet classes
+// (`mm-transport*`, `mm-scrubber`, `mm-time`, `mm-volume*`) serves both;
+// `large` adds `mm-transport-large` / `mm-volume-large`, the now-playing
+// view's size up.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -20,6 +22,14 @@ const REPEAT_ICON = {
     all: 'media-playlist-repeat-symbolic',
     one: 'media-playlist-repeat-song-symbolic',
 };
+
+// Muted, then thirds, as the shell's own sound indicator has them.
+const VOLUME_ICONS = [
+    'audio-volume-muted-symbolic',
+    'audio-volume-low-symbolic',
+    'audio-volume-medium-symbolic',
+    'audio-volume-high-symbolic',
+];
 
 export class Transport {
     constructor({player, large = false}) {
@@ -126,6 +136,111 @@ export class Transport {
         const seconds = positionUs / 1e6;
         this._elapsed.text = formatTime(seconds);
         this._remaining.text = this._lengthUs > 0 ? formatTime(seconds - this._lengthUs / 1e6) : '0:00';
+    }
+
+    destroy() {
+        this._player.disconnectObject(this);
+        this.actor.destroy();
+    }
+}
+
+// The volume: a speaker that mutes, its glyph the level, beside a short run
+// of the shell's own slider, so the wheel and a drag work on it as they do
+// on the sound slider — and the wheel works over the speaker too, as it
+// does over the top bar's. Sized up under the now-playing view's transport
+// it has a loud speaker at its far end, as Apple draws it. The level goes
+// to the player when the handle is let go, and as it changes otherwise
+// (the wheel), the player coalescing those; the glyph follows the handle
+// meanwhile. Until whoever is playing has said where the level is there is
+// nothing to move, and the control waits insensitive.
+export class VolumeControl {
+    constructor({player, large = false}) {
+        this._player = player;
+        this._dragging = false;
+        this._setting = false;
+
+        this.actor = new St.BoxLayout({
+            style_class: large ? 'mm-volume mm-volume-large' : 'mm-volume',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        this._mute = createIconButton('audio-volume-high-symbolic', {
+            styleClass: 'icon-button mm-transport-btn', accessibleName: 'Mute',
+        });
+        this._mute.y_align = Clutter.ActorAlign.CENTER;
+        this._mute.connect('clicked', () => player.toggleMute());
+        this._mute.connect('scroll-event', (_actor, event) => this._onScroll(event));
+        this.actor.add_child(this._mute);
+
+        this._slider = new Slider(0);
+        this._slider.add_style_class_name('mm-volume-slider');
+        this._slider.accessible_name = 'Volume';
+        this._slider.y_align = Clutter.ActorAlign.CENTER;
+        this._slider.connect('drag-begin', () => (this._dragging = true));
+        this._slider.connect('drag-end', () => {
+            this._dragging = false;
+            player.setVolume(this._slider.value);
+        });
+        this._slider.connect('notify::value', () => {
+            if (this._setting)
+                return;
+            this._setIcon(this._slider.value);
+            if (!this._dragging)
+                player.setVolume(this._slider.value);
+        });
+        this.actor.add_child(this._slider);
+
+        if (large) {
+            this.actor.add_child(new St.Icon({
+                icon_name: 'audio-volume-high-symbolic',
+                style_class: 'mm-volume-icon',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+
+        player.connectObject('changed', () => this._render(), this);
+        this._render();
+    }
+
+    // The top bar's sound indicator's own reading of the wheel.
+    _onScroll(event) {
+        if (event.get_flags() & Clutter.EventFlags.FLAG_POINTER_EMULATED)
+            return Clutter.EVENT_PROPAGATE;
+        const direction = event.get_scroll_direction();
+        let nSteps = 0;
+        if (direction === Clutter.ScrollDirection.DOWN) {
+            nSteps = -1;
+        } else if (direction === Clutter.ScrollDirection.UP) {
+            nSteps = 1;
+        } else if (direction === Clutter.ScrollDirection.SMOOTH) {
+            const [, dy] = event.get_scroll_delta();
+            nSteps = -dy;
+            if (event.get_scroll_flags() & Clutter.ScrollFlags.INVERTED)
+                nSteps *= -1;
+        }
+        if (this._slider.reactive)
+            this._slider.step(nSteps);
+        return Clutter.EVENT_STOP;
+    }
+
+    _render() {
+        const {volume, canVolume} = this._player.state;
+        this._mute.reactive = canVolume;
+        this._slider.reactive = canVolume;
+        this._slider.can_focus = canVolume;
+        if (!this._dragging && volume !== null && volume !== this._slider.value) {
+            this._setting = true;
+            this._slider.value = volume;
+            this._setting = false;
+        }
+        this._setIcon(volume ?? 1);
+        this._mute.accessible_name = volume === 0 ? 'Unmute' : 'Mute';
+    }
+
+    _setIcon(volume) {
+        const n = volume <= 0 ? 0 : Math.min(3, Math.max(1, Math.ceil(3 * volume)));
+        this._mute.icon_name = VOLUME_ICONS[n];
     }
 
     destroy() {

@@ -2,8 +2,9 @@
 // where the app grid keeps its row of workspaces (libraryView's slot for
 // it; the CSS width caps it to the grid's own block rather than the full
 // screen). Art, title and artist on the left, clickable through to Now
-// Playing, and the shared transport and scrubber (playerWidgets.js) in the
-// middle. With no track it says "Not Playing" — or offers a Start button
+// Playing, the shared transport and scrubber (playerWidgets.js) in the
+// middle, and the volume at the far end, where Apple's own bar keeps it.
+// With no track it says "Not Playing" — or offers a Start button
 // when the engine itself is down, which is polled for while nothing plays
 // and the bar is actually on screen: a bar in a library that is put away
 // asks nothing. One height either way, so the grid under it never moves.
@@ -14,7 +15,7 @@ import GLib from 'gi://GLib';
 
 import * as amctl from './amctl.js';
 import {createLabel} from './widgets.js';
-import {Transport, createRemoteArt} from './playerWidgets.js';
+import {Transport, VolumeControl, createRemoteArt} from './playerWidgets.js';
 
 // How often to ask `engine status` while nothing is playing and the bar is
 // showing, to notice the engine coming up (or going down) without the user
@@ -81,6 +82,9 @@ export class PlayerBar {
         this._transport = new Transport({player});
         this.actor.add_child(this._transport.actor);
 
+        this._volume = new VolumeControl({player});
+        this.actor.add_child(this._volume.actor);
+
         player.connectObject('changed', () => this._render(), this);
         this.actor.connect('notify::mapped', () => this._syncEnginePoll());
         this._render();
@@ -90,6 +94,7 @@ export class PlayerBar {
         const track = this._player.state.track;
         this._left.visible = !!track;
         this._transport.actor.visible = !!track;
+        this._volume.actor.visible = !!track;
         if (track) {
             this._empty.hide();
             this._start.hide();
@@ -165,6 +170,7 @@ export class PlayerBar {
         this._stopEnginePoll();
         this._player.disconnectObject(this);
         this._transport.destroy();
+        this._volume.destroy();
         this.actor.destroy();
     }
 }

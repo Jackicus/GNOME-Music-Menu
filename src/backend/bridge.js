@@ -300,11 +300,13 @@
             return { ok: true };
         },
 
+        // Answers with the level as MusicKit has it after the set. Apple's
+        // page keeps it across restarts itself; a nought is a mute.
         volume: async function (val) {
             const mk = getMusicKit();
             if (!mk) throw new Error('MusicKit not initialized');
-            mk.volume = Math.max(0, Math.min(1, Number(val)));
-            return { ok: true };
+            mk.volume = Math.max(0, Math.min(1, Number(val) || 0));
+            return { volume: typeof mk.volume === 'number' ? mk.volume : 1 };
         },
 
         shuffle: async function (mode) {

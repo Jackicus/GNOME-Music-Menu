@@ -106,6 +106,16 @@ async function testAddToPlaylist() {
     assert.deepStrictEqual(sent[0].body, {data: [{id: '123', type: 'songs'}]});
 }
 
+// The level is clamped to MusicKit's 0..1 and answered as it was set.
+async function testVolumeIsClampedAndAnswered() {
+    const {bridge} = load(response(200, '{}'));
+    assert.deepStrictEqual(await bridge.volume(0.5), {volume: 0.5});
+    assert.deepStrictEqual(await bridge.volume('0.25'), {volume: 0.25});
+    assert.deepStrictEqual(await bridge.volume(1.7), {volume: 1});
+    assert.deepStrictEqual(await bridge.volume(-2), {volume: 0});
+    assert.deepStrictEqual(await bridge.volume('nonsense'), {volume: 0});
+}
+
 async function testMissingClientIsAClearError() {
     globalThis.window = {MusicKit: {getInstance: () => ({api: {music: async () => ({})}})}};
     vm.runInThisContext(source);
@@ -119,6 +129,7 @@ async function testMissingClientIsAClearError() {
         testRefusalWithoutJsonBody,
         testRatingSendsObjectBody,
         testAddToPlaylist,
+        testVolumeIsClampedAndAnswered,
         testMissingClientIsAClearError,
     ];
     for (const test of tests)

@@ -591,6 +591,43 @@
     min-width: 40px;
 }
 
+/* ---- Volume (playerWidgets.js VolumeControl) --------------------------- */
+
+/* A speaker that mutes (a transport button, so it matches its neighbours)
+ * and a short run of the shell's own slider, at the bar's far end; under the
+ * now-playing view's transport it is sized up, with a loud speaker at its
+ * other end as Apple draws it. Nothing to move until whoever is playing has
+ * said where the level is: insensitive, and dimmed to say so. */
+.mm-volume {
+    spacing: 2px;
+}
+
+.mm-volume-slider {
+    width: 6em;
+}
+
+.mm-volume-slider:insensitive {
+    color: rgba(250, 250, 251, 0.25);
+    -barlevel-active-background-color: rgba(250, 250, 251, 0.25);
+}
+
+.mm-volume-icon {
+    icon-size: 16px;
+    color: rgba(250, 250, 251, 0.55);
+}
+
+.mm-volume-large {
+    spacing: 8px;
+}
+
+.mm-volume-large .mm-volume-slider {
+    width: 10em;
+}
+
+.mm-volume-large .mm-volume-icon {
+    icon-size: 20px;
+}
+
 /* ---- Now Playing view (nowPlaying.js) ----------------------------------- */
 
 .mm-now-playing {

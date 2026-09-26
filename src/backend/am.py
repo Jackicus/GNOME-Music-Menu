@@ -746,8 +746,8 @@ def handle_volume(val, no_start=False):
         raise AmError("usage", f"Volume must be a number between 0 and 1: {val}")
     client = get_bridge_client(no_start=no_start)
     try:
-        client.evaluate(f"window.__musicMenu.volume({vol})", await_promise=True)
-        return {"ok": True}
+        res = client.evaluate(f"window.__musicMenu.volume({vol})", await_promise=True)
+        return res if isinstance(res, dict) else {"volume": vol}
     except Exception as e:
         raise AmError("api", f"Volume change failed: {e}")
     finally:
