@@ -8,7 +8,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-const SIGN_IN_HINT = 'Sign in to Apple Music in Settings, then press Sync.';
+export const SIGN_IN_HINT = 'Sign in to Apple Music in Settings, then press Sync.';
 
 export const SECTIONS = [
     {
@@ -68,6 +68,17 @@ export const LIBRARY = {
 
 export function sectionByKey(key) {
     return SECTIONS.find(s => s.key === key) ?? SECTIONS[0];
+}
+
+// The section an item of `kind` belongs with, for the tab its detail is
+// shown against when it was not picked from a tab — a search hit, a shelf's.
+// A song has no tab of its own; its detail opens as an album's would.
+const KIND_TO_SECTION = {
+    album: 'albums', artist: 'artists', playlist: 'playlists', station: 'radio', song: 'albums',
+};
+
+export function sectionKeyForKind(kind) {
+    return KIND_TO_SECTION[kind] ?? 'albums';
 }
 
 // Which sections are switched on, in SECTIONS' own order — read by app.js to

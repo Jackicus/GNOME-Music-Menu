@@ -26,7 +26,13 @@
 // transitions, rather than two views drawn over each other.
 //
 // What is ours here: the workspaces row above the grid is folded away while
-// the view is up, so the posters get its room.
+// the view is up, so the posters get its room. And the shell's own search
+// entry, while the view is up, is Apple Music's: what is typed into it goes
+// to a search page in the tabs' place (libraryView.js, searchView.js) and
+// to none of the shell's providers, and the view stays where it is instead
+// of fading out under the shell's results. The entry itself — its clear
+// icon, its focus, its Escape — stays the shell's, and it is the shell's
+// entirely whenever the view is not what the overview shows.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -42,6 +48,31 @@ import {LibraryView} from './libraryView.js';
 // VERTICAL_SPACING_RATIO, overviewControls.js:22-23, which it does not export).
 const DASH_MAX_SHARE = 0.16;
 const VERTICAL_SPACING_SHARE = 0.02;
+
+// `object[name]` wrapped around whatever is there — the prototype's method,
+// or another extension's wrap of it — chain-safely, as `_foldWorkspaces`
+// wraps the layout's: `make(through, live)` builds the wrap, with `through`
+// the call on to what was there and `live()` whether ours is still wanted.
+// Answers with what puts it back: what was there before, if ours is still
+// the outermost — taking ours out from under someone else's wrap would take
+// theirs with it — and after that ours, left in their chain, calls straight
+// through.
+function wrapMethod(object, name, make) {
+    const stock = object[name];
+    const own = Object.hasOwn(object, name) ? stock : null;
+    let live = true;
+    const wrapped = make((self, args) => stock.apply(self, args), () => live);
+    object[name] = wrapped;
+    return () => {
+        live = false;
+        if (object[name] !== wrapped)
+            return;
+        if (own)
+            object[name] = own;
+        else
+            delete object[name];
+    };
+}
 
 export class MediaMenu {
     // `button` is the library's button beside Show Apps, which the app holds
@@ -73,7 +104,10 @@ export class MediaMenu {
         this._fold = 0;
         // Whether the overview that is up is one our button opened.
         this._forced = false;
-        this._escapeId = 0;
+        this._keyId = 0;
+        // The shell's search entry, and what puts its controller back.
+        this._entry = null;
+        this._restoreSearch = null;
         // The tab to open onto once the overview has gone down, when another
         // extension's view was up in the slot (see the top of this file).
         this._next = null;
@@ -130,6 +164,19 @@ export class MediaMenu {
         this._adjustment = this._controls._stateAdjustment ?? null;
         this._adjustment?.connectObject('notify::value', () => this._syncWorkspaces(), this);
 
+        // Keys seen ahead of everyone — see _onCapturedKey. Keyed on the
+        // event type, as the date menu keys its own captures
+        // (dateMenu.js:923-931), so the pointer crossing the overview never
+        // reaches JS. The `key` detail is wider than a key press — releases
+        // and the input method's own events carry it too — and asking one
+        // of those for a key symbol is a Clutter assertion, so the type is
+        // checked first, exactly as the date menu's handler does
+        // (calendar.js:860).
+        this._keyId = global.stage.connect('captured-event::key',
+            (_stage, event) => this._onCapturedKey(event));
+
+        this._takeSearch();
+
         // However the overview goes, it is nobody's forced one any more —
         // and if it went down to make way for ours, it comes back up onto
         // the library, off the idle so the shell's own hide has finished
@@ -170,6 +217,14 @@ export class MediaMenu {
         this._showAppsButton = null;
         Main.overview.disconnectObject(this);
         this._unforce();
+        if (this._keyId)
+            global.stage.disconnect(this._keyId);
+        this._keyId = 0;
+        for (const restore of this._restoreSearch ?? [])
+            restore();
+        this._restoreSearch = null;
+        this._entry?.clutter_text.disconnectObject(this);
+        this._entry = null;
         if (this._reopenId)
             GLib.source_remove(this._reopenId);
         this._reopenId = 0;
@@ -348,38 +403,141 @@ export class MediaMenu {
         Main.overview.show(ControlsState.APP_GRID);
     }
 
-    // An overview of our own opening. While it is up, Escape on the view
-    // closes it whole — the desktop is where it was opened from — where
-    // the shell's Escape would only step down to the window picker. Seen
-    // ahead of the shell's own handler, which is on the stage's bubbling
-    // phase; a search or a popup over the overview is left its own Escape.
+    // An overview of our own opening: Escape on the view closes it whole
+    // (_onCapturedKey).
     _force() {
         this._forced = true;
-        if (this._escapeId)
-            return;
-        // Keyed on the event type, as the date menu keys its own captures
-        // (dateMenu.js:923-931), so the pointer crossing the overview never
-        // reaches JS. The `key` detail is wider than a key press — releases
-        // and the input method's own events carry it too — and asking one of
-        // those for a key symbol is a Clutter assertion, so the type is
-        // checked first, exactly as the date menu's handler does
-        // (calendar.js:860).
-        this._escapeId = global.stage.connect('captured-event::key', (_stage, event) => {
-            if (event.type() !== Clutter.EventType.KEY_PRESS ||
-                event.get_key_symbol() !== Clutter.KEY_Escape ||
-                !this._showing || !this._showAppsButton?.checked ||
-                Main.modalCount > 1 || this._controls?._searchController?.searchActive)
-                return Clutter.EVENT_PROPAGATE;
-            Main.overview.hide();
-            return Clutter.EVENT_STOP;
-        });
     }
 
     _unforce() {
         this._forced = false;
-        if (this._escapeId)
-            global.stage.disconnect(this._escapeId);
-        this._escapeId = 0;
+    }
+
+    // Keys on the view, seen in the stage's capture phase — ahead of the
+    // shell's own Escape handler, which is on the stage's bubbling phase,
+    // and of St's focus manager, which takes the arrows in the capture
+    // phase before any view of ours. Only with the view up, and never over
+    // a popup (an item's menu) or the shell's own search, which keep their
+    // own keys:
+    //  - with a search up, Escape ends it, where the shell's would step the
+    //    app grid down (and take a forced overview with it), and Up off the
+    //    top row of its results goes back to the entry, where St would go
+    //    looking for a tab;
+    //  - in an overview our button opened, Escape closes it whole — the
+    //    desktop is where it was opened from — where the shell's would only
+    //    step down to the window picker. Not with the keyboard in an empty
+    //    entry, whose Escape is the shell's and only lets the keyboard go.
+    _onCapturedKey(event) {
+        if (event.type() !== Clutter.EventType.KEY_PRESS ||
+            !this._showing || !this._showAppsButton?.checked ||
+            Main.modalCount > 1 || this._controls?._searchController?.searchActive)
+            return Clutter.EVENT_PROPAGATE;
+        const symbol = event.get_key_symbol();
+        const text = this._entry?.clutter_text ?? null;
+        if (this._library?.searching) {
+            if (symbol === Clutter.KEY_Escape) {
+                this._endSearch();
+                return Clutter.EVENT_STOP;
+            }
+            if (symbol === Clutter.KEY_Up && text) {
+                const focus = global.stage.get_key_focus();
+                if (focus && this._library.currentView?.atTopRow(focus)) {
+                    text.grab_key_focus();
+                    return Clutter.EVENT_STOP;
+                }
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }
+        if (symbol === Clutter.KEY_Escape && this._forced && !text?.has_key_focus()) {
+            Main.overview.hide();
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    // ------------------------------------------------------------------
+    // The shell's search entry, Apple Music's while the view is up
+    // ------------------------------------------------------------------
+    // The entry itself, its clear icon and its focus stay the shell's; what
+    // is taken is what the typed text sets off. Two of the search
+    // controller's own methods are wrapped for that, on the instances and
+    // chain-safely (wrapMethod): `_setSearchActive(true)`, which would fade
+    // the app grid — and this view in it — out under the shell's results;
+    // and the results view's `setTerms`, which would send the words to
+    // every provider on the system, Apple Music's own among them
+    // (searchProvider.js), for a page nothing shows. Both call straight
+    // through unless the view is what the overview shows, so the entry is
+    // the shell's own everywhere else. What the text is for comes off the
+    // entry's own `text-changed`, after the shell's handler has had it.
+    _takeSearch() {
+        const controller = this._controls._searchController ?? null;
+        const results = controller?._searchResults ?? null;
+        this._entry = Main.overview.searchEntry ?? null;
+        if (!controller || !this._entry || typeof controller._setSearchActive !== 'function' ||
+            typeof results?.setTerms !== 'function') {
+            console.warn('[Music Menu] The overview search is not laid out as expected; the entry stays the shell\'s.');
+            this._entry = null;
+            return;
+        }
+        const menu = this;
+        this._restoreSearch = [
+            wrapMethod(controller, '_setSearchActive', (through, live) => function (active) {
+                if (active && live() && menu.isShowing)
+                    return undefined;
+                return through(this, [active]);
+            }),
+            wrapMethod(results, 'setTerms', (through, live) => function (terms) {
+                if (terms?.length && live() && menu.isShowing)
+                    return undefined;
+                return through(this, [terms]);
+            }),
+        ];
+        this._entry.clutter_text.connectObject(
+            'text-changed', () => this._onEntryText(),
+            'key-press-event', (_text, event) => this._onEntryKey(event),
+            this);
+    }
+
+    // The entry's text, at every keystroke: the search, or, emptied, the
+    // end of it.
+    _onEntryText() {
+        if (!this.isShowing || !this._library)
+            return;
+        this._library.search(this._entry.get_text());
+    }
+
+    // Keys in the entry with a search up, once the shell's own handler has
+    // passed on them (searchController.js `_onKeyPress` takes them only
+    // for a search of its own): Down or Tab into the results, Enter on the
+    // top one — as the shell's own search has them.
+    _onEntryKey(event) {
+        if (!this.isShowing || !this._library?.searching)
+            return Clutter.EVENT_PROPAGATE;
+        const view = this._library.currentView;
+        const symbol = event.get_key_symbol();
+        if (symbol === Clutter.KEY_Down || symbol === Clutter.KEY_Tab)
+            return view?.focusFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter)
+            return view?.activateFirst() ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    // The search ended from the keyboard: the entry emptied and let go of,
+    // which is the shell's own `reset()`; the tab comes back through the
+    // entry's `text-changed`.
+    _endSearch() {
+        const controller = this._controls?._searchController;
+        if (controller?.reset && this._entry?.get_text())
+            controller.reset();
+        else
+            this._library?.endSearch();
+    }
+
+    // The entry emptied — the view going, a tab chosen — with the keyboard
+    // left where it is.
+    _clearEntry() {
+        if (this._entry?.get_text())
+            this._entry.text = '';
     }
 
     // ------------------------------------------------------------------
@@ -389,6 +547,12 @@ export class MediaMenu {
     _show(showing) {
         if (!this._appsBox)
             return;
+        // A search up goes with the view, and the entry it came from is
+        // emptied: the shell's again, for whatever the overview shows next.
+        if (!showing && this._library?.searching) {
+            this._library.endSearch();
+            this._clearEntry();
+        }
         if (showing !== this._showing) {
             // Built against the slot as it stands, before the fold moves it.
             const library = showing ? this._view() : null;
@@ -468,6 +632,9 @@ export class MediaMenu {
             onContextMenu: this._onContextMenu,
             onSwitch: key => {
                 this._key = key;
+                // A tab chosen while searching is the end of the search
+                // (libraryView.js `show`); the entry says so too.
+                this._clearEntry();
                 this._onSwitch?.(key);
             },
             onOpenSettings: this._onOpenSettings,

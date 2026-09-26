@@ -29,6 +29,7 @@ Apple Music endpoints).
 | `Main.overview.dash.showAppsButton` (`.checked`) | mediaMenu.js | The view can no longer tell "is the app grid up" from "is it ours" | No |
 | `controls._searchController`, `.searchActive` | mediaMenu.js | Workspaces do not reappear for a search while the menu is up | No, optional-chained |
 | `Main.overview.searchController.addProvider(provider)` | searchProvider.js | Apple Music results simply never appear in the overview's search; nothing throws | No — a public getter and method, but not a documented extension API, see below |
+| `controller._setSearchActive` and `controller._searchResults.setTerms` (wrapped), `Main.overview.searchEntry.clutter_text` (`text-changed`, `key-press-event`) | mediaMenu.js | Typing with the menu up runs the shell's own search over it, as before; no search page in the menu | Yes — a warning once, and the entry stays the shell's |
 | `ProviderInfo.animateLaunch()` calling `Shell.AppSystem.lookup_app(appInfo.get_id())` | searchProvider.js | A click on the "Apple Music" heading over the results throws inside the shell's own handler | Yes — `get_id()` names `org.gnome.Shell.Extensions.desktop`, which the shell ships |
 | `controls._stateAdjustment` | mediaMenu.js | The workspace row is not folded/unfolded in step with the overview's own transition | No, optional-chained |
 | `controls.layout_manager._getAppDisplayBoxForState` (wrapped) | mediaMenu.js | The slot is never grown for the shelves/grid above the workspace row | Yes, guarded and chain-safe |
@@ -110,6 +111,53 @@ inside `enable()`'s try, and the extension carries on without search results.
 If gnome-shell ever stops shipping `org.gnome.Shell.Extensions.desktop`, the
 heading's click throws in the shell's handler once per click; the results
 themselves are unaffected.
+
+## The overview's search entry, taken over (mediaMenu.js) — new
+
+```js
+const controller = this._controls._searchController;      // SearchController
+wrapMethod(controller, '_setSearchActive', …);             // instance, chain-safe
+wrapMethod(controller._searchResults, 'setTerms', …);      // SearchResultsView
+Main.overview.searchEntry.clutter_text.connectObject('text-changed', …, 'key-press-event', …, this);
+```
+
+**What for.** While the menu is what the overview shows, the shell's
+"Type to search" entry is Apple Music's: the entry's own `text-changed`
+feeds `LibraryView.search()` (searchView.js), and two of the search
+controller's methods are wrapped on the instances so the shell's own
+search stays out of the way. `_setSearchActive(true)` is what
+`overviewControls.js` answers by fading the app display — the menu's slot —
+out under the shell's results view (`_onSearchChanged`,
+`_updateAppDisplayVisibility`); suppressed, the menu stays put and
+`searchActive` never flips. `SearchResultsView.setTerms(terms)` is what
+starts every provider's search (`_doSearch`), the extension's own
+`searchProvider.js` included, for a results view nothing would show;
+suppressed, nothing is asked twice. Both wraps call straight through
+whenever the menu is not showing (`isShowing`), and always for
+`_setSearchActive(false)` and `setTerms([])`, so the entry's reset, clear
+icon and focus handling are untouched. Both are `this.method(...)` calls
+inside the controller, so an own-property override on the instance is
+what takes effect; `_onTextChanged` and `_onStageKeyPress` are bound at
+connect time and are not touched.
+
+**Keys.** `SearchController._onKeyPress` on the entry takes Tab, Down and
+Enter only while its own search is active, so with ours up they reach the
+menu's handler connected after it, which sends them into the results.
+Escape and Up off the top row are seen in the stage's capture phase
+(`captured-event::key`), ahead of the shell's own Escape (bubbling on the
+stage: it would uncheck Show Apps) and of St's focus manager.
+
+**Chain-safe.** `wrapMethod` keeps what was there, tracks whether the wrap is
+still the outermost, and on disable restores the previous only if it is —
+the same pattern as `_getAppDisplayBoxForState` below — and a wrap left in
+someone else's chain calls straight through.
+
+**If it changes.** Any of the four fields missing (`_searchController`,
+`_setSearchActive`, `_searchResults.setTerms`, `searchEntry`) logs one warning
+and leaves the entry the shell's: typing with the menu up runs the shell's
+search over it, as it did before this. A shell that stops routing
+`_onTextChanged` through `_setSearchActive`/`setTerms` would show its own
+results beside ours rather than break anything.
 
 ## The app grid (mediaGrid.js)
 

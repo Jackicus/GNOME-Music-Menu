@@ -44,7 +44,7 @@ import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import {Duration, Ease, POP_SCALE, allocateNow, fadeTo, flyClone, rectIn} from './anim.js';
-import {SECTIONS, loadLibrary, libraryPath, enabledSections, sectionByKey} from './library.js';
+import {SECTIONS, loadLibrary, libraryPath, enabledSections, sectionByKey, sectionKeyForKind} from './library.js';
 import {createHeader, createIconButton} from './widgets.js';
 import {setCornerRadius, PANE_INSET} from './shape.js';
 import {setGridAlign} from './mediaGrid.js';
@@ -64,13 +64,6 @@ import {openItemMenu} from './itemMenu.js';
 import {MusicSearchProvider} from './searchProvider.js';
 import {notifyFailure} from './notify.js';
 import * as amctl from './amctl.js';
-
-// The section a search result's kind maps onto, for the tab its detail is
-// shown against. A song has no tab of its own; its detail opens as an album
-// would.
-const KIND_TO_SECTION = {
-    album: 'albums', artist: 'artists', playlist: 'playlists', station: 'radio', song: 'albums',
-};
 
 // Gap between the surface and the work-area edges, in logical px.
 const OUTER_MARGIN = 28;
@@ -835,7 +828,15 @@ export class MusicMenuApp {
     //
     // A "modal" pane wants the desktop to itself, so the browser goes first
     // (the popup hides the overview itself).
+    //
+    // A song on a tile — a search hit; nothing else puts one there — has no
+    // pane to open: picked, it plays, as it does on Apple Music's own
+    // search page. The browser stays up, as it does for a row's play.
     _openPicked(key, item, tile) {
+        if (item.kind === 'song') {
+            amctl.run(['play', 'song', item.id]).catch(notifyFailure);
+            return;
+        }
         if (this._dialog) {
             if (this._detailMode() === 'modal')
                 this._browser.close();
@@ -1138,7 +1139,7 @@ export class MusicMenuApp {
                 console.warn(`[Music Menu] Could not load ${item.kind} ${item.id}: ${e.message}`);
             }
         }
-        const key = KIND_TO_SECTION[full.kind] ?? 'albums';
+        const key = sectionKeyForKind(full.kind);
         const section = sectionByKey(key);
         Main.overview.hide();
         if (this._dialog) {

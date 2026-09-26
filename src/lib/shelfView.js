@@ -115,6 +115,17 @@ class Shelf {
     get firstTile() {
         return this.view?.tileFor(this._items[0]?.id) ?? null;
     }
+
+    // Its first item picked, as a click on its tile would — Enter in a
+    // search entry takes the top result.
+    activateFirst() {
+        const item = this._items[0];
+        if (!item)
+            return false;
+        this.build();
+        this._callbacks.onActivate(this._section.key, item, this.firstTile);
+        return true;
+    }
 }
 
 export class ShelfView {
@@ -196,6 +207,11 @@ export class ShelfView {
     // host's step down from the tabs, as a grid's own focusFirst() is.
     focusFirst() {
         return this._shelves[0]?.view?.focusFirst() ?? false;
+    }
+
+    // The very first item, picked: what Enter means in a search.
+    activateFirst() {
+        return this._shelves[0]?.activateFirst() ?? false;
     }
 
     // Whether `actor` is on the first shelf's first row: an arrow up from

@@ -204,6 +204,11 @@ export class DetailView {
         if (!this.item || item?.id !== this.item.id)
             return;
         this.item = item;
+        // A cover that has arrived since the pane was built — a search
+        // hit's, fetched along with its track list (app.js `_loadGroups`)
+        // — takes the place of the placeholder drawn for it.
+        if (item.art && this.hero?.has_style_class_name('mm-art-placeholder'))
+            this._replaceHero(item);
         this._groups = item.groups ?? [];
         this._groupIndex = 0;
         this._tabButtons = [];
@@ -309,6 +314,29 @@ export class DetailView {
         }
     }
 
+    // The hero built again from what the item says now, in the old one's
+    // place — and at its opacity, since a flight may be holding it hidden.
+    _replaceHero(item) {
+        const old = this.hero;
+        this.hero = this._buildHero(item);
+        this.hero.opacity = old.opacity;
+        old.get_parent()?.replace_child(old, this.hero);
+        old.destroy();
+    }
+
+    _buildHero(item) {
+        const {width, height} = this._heroSize();
+        return createArtwork({
+            path: item.art,
+            title: item.title,
+            icon: this._section?.icon ?? 'audio-x-generic-symbolic',
+            width,
+            height,
+            styleClass: 'mm-art mm-hero',
+            radius: item.kind === 'artist' ? 'round' : 'hero',
+        });
+    }
+
     // Left: artwork, then Play/Shuffle — or, for a station, one big Play.
     _buildSide(item) {
         // x_expand is set explicitly to false: Clutter otherwise treats a parent
@@ -316,16 +344,7 @@ export class DetailView {
         // side column would swallow half of the free width.
         const side = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mm-detail-side', x_expand: false, y_expand: true});
 
-        const {width: heroW, height: heroH} = this._heroSize();
-        this.hero = createArtwork({
-            path: item.art,
-            title: item.title,
-            icon: this._section?.icon ?? 'audio-x-generic-symbolic',
-            width: heroW,
-            height: heroH,
-            styleClass: 'mm-art mm-hero',
-            radius: item.kind === 'artist' ? 'round' : 'hero',
-        });
+        this.hero = this._buildHero(item);
         side.add_child(this.hero);
 
         if (!item.play)

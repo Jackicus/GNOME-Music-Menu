@@ -14,6 +14,12 @@
 // shelves that are each a one-row grid of the same tiles, and it answers the
 // same few methods a grid does (`focusFirst`, `atTopRow`, `pageBy`, `tileFor`)
 // on their behalf. The empty state answers none, so they are asked with `?.`.
+//
+// A search (searchView.js) is a page of the same kind, in the tabs' place
+// rather than under one of them: the host with an entry to feed it (the
+// overview's, mediaMenu.js) hands the text here, the tabs stay with none
+// lit, and the tab that was on show comes back when the search ends — or
+// when a tab is chosen, which ends it.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -21,6 +27,7 @@ import GLib from 'gi://GLib';
 
 import {ensureStyleDeep} from './anim.js';
 import {createMediaView} from './mediaGrid.js';
+import {SearchView} from './searchView.js';
 import {ShelfView} from './shelfView.js';
 import {createEmptyState, createHeader, createIconButton} from './widgets.js';
 
@@ -55,6 +62,10 @@ export class LibraryView {
         this._pages = new Map();
         this._prebuildIdle = 0;
         this._key = this._sectionFor(active)?.key ?? null;
+        // The search page, built the first time something is looked for,
+        // and whether it is what shows in the tabs' place.
+        this._search = null;
+        this._searching = false;
         // The player bar's slot, between the tabs and the grid — where the
         // app grid keeps its row of workspaces — and how much height it
         // takes off every page's budget.
@@ -104,6 +115,7 @@ export class LibraryView {
                 GLib.source_remove(this._barRecheckId);
             this._barRecheckId = 0;
             this._pages.clear();
+            this._search = null;
         });
     }
 
@@ -121,13 +133,18 @@ export class LibraryView {
         return this._key;
     }
 
-    // Its grid or shelf, or null when it has nothing in it.
+    // Its grid or shelf — or the search, while that is up — or null when it
+    // has nothing in it.
     get currentView() {
+        if (this._searching)
+            return this._search;
         return this._pages.get(this._key)?.view ?? null;
     }
 
-    // `key`'s tab, or the one showing when there is no such section.
+    // `key`'s tab, or the one showing when there is no such section. A
+    // search up is over: a tab chosen is the way out of it.
     show(key, {reveal = false} = {}) {
+        this._leaveSearch();
         this._key = this._sectionFor(key)?.key ?? this._key;
         if (!this._key)
             return;
@@ -200,19 +217,90 @@ export class LibraryView {
             return;
         this._barHeight = height;
         // Pages built against the old height are built again; none yet is
-        // the usual case, `show` having asked before its first.
-        if (!this._pages.size)
+        // the usual case, `show` having asked before its first. A search
+        // up is asked again against the new one.
+        if (!this._pages.size && !this._search)
             return;
+        const query = this._searching ? this._search.query : null;
+        this._leaveSearch();
         for (const page of this._pages.values())
             page.actor.destroy();
         this._pages.clear();
+        this._search?.destroy();
+        this._search = null;
         if (this._key)
             this.show(this._key);
+        if (query)
+            this.search(query);
+    }
+
+    // ------------------------------------------------------------------
+    // Search
+    // ------------------------------------------------------------------
+    // Apple Music's search in the tabs' place, for `query` — the entry's
+    // text as it stands, at every keystroke; empty is the end of it.
+    search(query) {
+        if (!(query ?? '').trim()) {
+            this.endSearch();
+            return;
+        }
+        if (!this._pages.size)
+            this._measureBar();
+        this._search ??= this._buildSearch();
+        if (!this._searching) {
+            this._searching = true;
+            this.header.setActive(null);
+            for (const page of this._pages.values())
+                page.actor.visible = false;
+            this._search.actor.show();
+        }
+        this._search.setQuery(query);
+    }
+
+    // The tab that was on show, back.
+    endSearch() {
+        if (!this._searching)
+            return;
+        this._leaveSearch();
+        this.show(this._key);
+    }
+
+    get searching() {
+        return this._searching;
+    }
+
+    // Out of the search page, whatever is shown next; what was out is
+    // called back, and the page waits, empty, for the next.
+    _leaveSearch() {
+        if (!this._searching)
+            return;
+        this._searching = false;
+        this._search?.setQuery('');
+        this._search?.actor.hide();
+    }
+
+    // Against the same budget a tab's page gets.
+    _buildSearch() {
+        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        const view = new SearchView({
+            width: this._width,
+            height: this._height - HEADER_ALLOWANCE * scale - this._barHeight,
+            columns: this._columns,
+            rows: this._rows,
+            onActivate: this._onActivate,
+            onContextMenu: this._onContextMenu,
+            onOpenSettings: this._onOpenSettings,
+        });
+        view.actor.hide();
+        this.stack.add_child(view.actor);
+        return view;
     }
 
     // Where the keyboard starts: the grid's first tile on show, or, with
     // nothing in the section, whatever the empty state offers.
     focusFirst() {
+        if (this._searching)
+            return this._search.focusFirst();
         const page = this._pages.get(this._key);
         if (page?.view?.focusFirst)
             return page.view.focusFirst();

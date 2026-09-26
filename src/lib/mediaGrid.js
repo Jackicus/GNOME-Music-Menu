@@ -69,6 +69,7 @@ const KIND_ICON = {
     playlist: 'view-list-symbolic',
     artist: 'avatar-default-symbolic',
     station: 'radio-symbolic',
+    song: 'audio-x-generic-symbolic',
 };
 // Pages built beyond the one showing, so the next is there to swipe to —
 // built this long after the page they follow, not with it. A page is painted
