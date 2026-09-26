@@ -47,7 +47,7 @@ export class MediaMenu {
     // `button` is the library's button beside Show Apps, which the app holds
     // and hands to whichever place the library opens in; `onSwitch` hears of
     // a tab chosen here.
-    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, footer = null}) {
+    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._onActivate = onActivate;
@@ -57,10 +57,10 @@ export class MediaMenu {
         this._button = button;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
-        // A player bar (app.js), reattached to every LibraryView this menu
+        // The player bar (app.js), reattached to every LibraryView this menu
         // builds — a resize drops and rebuilds the view, but the bar itself
         // is a singleton for the whole extension.
-        this._footer = footer;
+        this._playerBar = playerBar;
         this._library = null;
         // Whether the view is what the app grid shows, and which tab it is on.
         this._showing = false;
@@ -472,7 +472,7 @@ export class MediaMenu {
             },
             onOpenSettings: this._onOpenSettings,
         });
-        this._library.setFooter(this._footer);
+        this._library.setBar(this._playerBar);
         this._library.actor.visible = false;
         this._appDisplay.add_child(this._library.actor);
         return this._library;

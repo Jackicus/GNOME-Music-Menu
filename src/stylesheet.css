@@ -382,17 +382,18 @@
 
 /* ---- Player bar (playerBar.js) ---------------------------------------- */
 
-/* A compact card, not a full-width strip: width caps out around the grid's
- * own centred block (mediaGrid.js's page is inset ARROWS_SHARE + page
- * padding either side) and libraryView.js centres it under the grid rather
- * than stretching it — see playerBar.js's x_align. Height is the "playing"
- * state; `.mm-player-bar-compact` (playerBar.js, toggled with the track)
- * shrinks it for "Not Playing"/"Start Apple Music", where there is no
- * transport row or scrubber to make room for. */
+/* A card, not a full-width strip: it sits between the tabs and the grid,
+ * where the app grid keeps its row of workspaces, its width capped around
+ * the grid's own centred block (mediaGrid.js's page is inset ARROWS_SHARE +
+ * page padding either side) and centred by libraryView.js rather than
+ * stretched — see playerBar.js's x_align. One height whether or not a track
+ * is playing: the grid under it is sized against the bar once, and a bar
+ * that grew as playback started would have pushed it. */
 .mm-player-bar {
     height: 64px;
     min-height: 64px;
-    width: 46em;
+    width: 60em;
+    margin-bottom: 8px;
     background-color: rgba(34, 34, 38, 0.88);
     border: 1px solid rgba(250, 250, 251, 0.08);
     border-radius: 18px;
@@ -400,17 +401,17 @@
     spacing: 16px;
 }
 
-.mm-player-bar-compact {
-    height: 48px;
-    min-height: 48px;
-}
-
 /* Left zone: now-playing metadata & album art trigger for NowPlayingView */
 .mm-player-bar-left {
-    spacing: 12px;
     padding: 4px 8px;
     border-radius: 12px;
     transition-duration: 120ms;
+}
+
+/* The art beside the title and artist: the button itself has one child, so
+ * the room between them is this box's. */
+.mm-player-bar-lockup {
+    spacing: 12px;
 }
 
 .mm-player-bar-left:hover {
@@ -461,7 +462,8 @@
  * same in the player bar and the now-playing view; `.mm-transport-large` is
  * the now-playing view's size up. The buttons are the theme's `icon-button`,
  * and play is the primary one: the accent fill of the theme's `.button.default`
- * on a circle. */
+ * on a circle. The transport is centred at its natural width, so the
+ * scrubber's own width is what makes the slider worth dragging. */
 .mm-transport {
     spacing: 4px;
 }
@@ -523,6 +525,7 @@
 
 .mm-scrubber {
     spacing: 10px;
+    min-width: 28em;
 }
 
 .mm-time {
@@ -556,6 +559,7 @@
 
 .mm-transport-large .mm-scrubber {
     spacing: 12px;
+    min-width: 32em;
 }
 
 .mm-transport-large .mm-time {

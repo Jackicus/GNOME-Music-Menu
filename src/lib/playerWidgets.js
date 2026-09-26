@@ -27,11 +27,14 @@ export class Transport {
         this._scrubbing = false;
         this._lengthUs = 0;
 
+        // In the bar the transport takes what the lockup leaves, so the
+        // scrubber runs the width of the card; under the now-playing view's
+        // artwork it sits centred at its own width.
         this.actor = new St.BoxLayout({
             style_class: large ? 'mm-transport mm-transport-large' : 'mm-transport',
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
-            x_align: Clutter.ActorAlign.CENTER,
+            x_align: large ? Clutter.ActorAlign.CENTER : Clutter.ActorAlign.FILL,
             y_align: Clutter.ActorAlign.CENTER,
         });
 

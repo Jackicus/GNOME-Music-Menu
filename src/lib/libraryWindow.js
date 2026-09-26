@@ -24,7 +24,7 @@ import {MediaPanel} from './panel.js';
 // came from, Escape, or a click away, so its header is the tabs alone.
 const LibraryPanel = GObject.registerClass(
 class MusicMenuLibraryPanel extends MediaPanel {
-    _init({sections, itemsFor, columns, rows, onActivate, onContextMenu, onSwitch, onOpenSettings, footer = null}) {
+    _init({sections, itemsFor, columns, rows, onActivate, onContextMenu, onSwitch, onOpenSettings, playerBar = null}) {
         // The folder's own behaviour: the panel goes when the button it came
         // out of unmaps, which is what closes it with the overview.
         super._init({dieWithSource: true});
@@ -37,9 +37,9 @@ class MusicMenuLibraryPanel extends MediaPanel {
         this._onContextMenu = onContextMenu;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
-        // A player bar (app.js), a singleton reattached to the view this
+        // The player bar (app.js), a singleton reattached to the view this
         // panel builds.
-        this._footer = footer;
+        this._playerBar = playerBar;
         this._library = null;
         // The budget the view was built for. Not `_budget`, which is the
         // host's method for working it out.
@@ -83,7 +83,7 @@ class MusicMenuLibraryPanel extends MediaPanel {
                 onSwitch: this._onSwitch,
                 onOpenSettings: this._onOpenSettings,
             });
-            this._library.setFooter(this._footer);
+            this._library.setBar(this._playerBar);
             this._panel.add_child(this._library.actor);
         }
         this._library.show(key);
@@ -117,7 +117,7 @@ export class LibraryWindow {
     // `button` is the library's button beside Show Apps, which the app holds
     // and hands to whichever place the library opens in; `onSwitch` hears of
     // a tab chosen here.
-    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, footer = null}) {
+    constructor({sections, itemsFor, onActivate, onContextMenu, columns, rows, button, onSwitch, onOpenSettings, playerBar = null}) {
         this._sections = sections;
         this._itemsFor = itemsFor;
         this._onActivate = onActivate;
@@ -127,7 +127,7 @@ export class LibraryWindow {
         this._button = button;
         this._onSwitch = onSwitch;
         this._onOpenSettings = onOpenSettings;
-        this._footer = footer;
+        this._playerBar = playerBar;
         this._panel = null;
         this._key = sections[0]?.key ?? null;
     }
@@ -171,7 +171,7 @@ export class LibraryWindow {
                     this._onSwitch?.(tab);
                 },
                 onOpenSettings: this._onOpenSettings,
-                footer: this._footer,
+                playerBar: this._playerBar,
             });
             // However it closes — Escape, the shade, the button unmapping
             // with the overview — the button is no longer lit.

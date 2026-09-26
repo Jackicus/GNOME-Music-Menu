@@ -186,8 +186,8 @@ export class MusicMenuApp {
         this._detailWorkspace = null;
         // Follows the engine's MPRIS player; one for the whole extension.
         this._player = null;
-        // The player bar built into whichever LibraryView's footer is
-        // showing, when the 'player-bar' setting is on.
+        // The player bar built into whichever LibraryView is showing, when
+        // the 'player-bar' setting is on.
         this._playerBar = null;
         // The full now-playing view, and the popup it opens in when the
         // library's detail pane is not on the surface.
@@ -260,8 +260,8 @@ export class MusicMenuApp {
             ...SECTIONS.map(s => `${s.prefix}-enabled`)];
         for (const key of rebuildKeys)
             this._settings.connectObject(`changed::${key}`, () => this._scheduleRebuild(), this);
-        // The player bar is built fresh into whichever LibraryView is footer
-        // shows; toggling it rebuilds so every place picks it up or drops it.
+        // The player bar goes into whichever LibraryView shows; toggling it
+        // rebuilds so every place picks it up or drops it.
         this._settings.connectObject('changed::player-bar', () => {
             this._syncPlayerBar();
             this._scheduleRebuild();
@@ -1008,8 +1008,8 @@ export class MusicMenuApp {
     // ------------------------------------------------------------------
 
     // Built (or torn down) to match the 'player-bar' setting. Persists across
-    // a rebuild — a new LibraryView's footer just gets it reattached
-    // (libraryView.js `setFooter` detaches rather than destroying it) — so
+    // a rebuild — a new LibraryView just gets it reattached (libraryView.js
+    // `setBar` detaches rather than destroying it) — so
     // there is one bar and one Player for the whole session.
     _syncPlayerBar() {
         const wanted = this._settings.get_boolean('player-bar');
@@ -1205,7 +1205,7 @@ export class MusicMenuApp {
                 onSwitch: key => (this._sectionKey = key),
                 onOpenSettings: () => this._openSettings(),
                 onSync: () => this._runSync(),
-                footer: this._playerBar?.actor ?? null,
+                playerBar: this._playerBar?.actor ?? null,
             });
             this._browser.enable();
         }
@@ -1321,7 +1321,7 @@ export class MusicMenuApp {
             onOpenSettings: () => this._openSettings(),
             onSync: () => this._runSync(),
         });
-        this._library.setFooter(this._playerBar?.actor ?? null);
+        this._library.setBar(this._playerBar?.actor ?? null);
         // Sized outright: a clone lays a hidden source out at the size it asks
         // for, and the overview's pictures of the workspace are clones of it.
         this._library.actor.set_size(width, height);

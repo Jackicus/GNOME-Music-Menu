@@ -55,11 +55,12 @@ export class LibraryView {
         this._pages = new Map();
         this._prebuildIdle = 0;
         this._key = this._sectionFor(active)?.key ?? null;
-        // The footer slot under the grid (a player bar), and how much height
-        // it takes off every page's budget.
-        this._footer = null;
-        this._footerHeight = 0;
-        this._footerRecheckId = 0;
+        // The player bar's slot, between the tabs and the grid — where the
+        // app grid keeps its row of workspaces — and how much height it
+        // takes off every page's budget.
+        this._bar = null;
+        this._barHeight = 0;
+        this._barRecheckId = 0;
 
         this.actor = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -99,19 +100,19 @@ export class LibraryView {
             if (this._prebuildIdle)
                 GLib.source_remove(this._prebuildIdle);
             this._prebuildIdle = 0;
-            if (this._footerRecheckId)
-                GLib.source_remove(this._footerRecheckId);
-            this._footerRecheckId = 0;
+            if (this._barRecheckId)
+                GLib.source_remove(this._barRecheckId);
+            this._barRecheckId = 0;
             this._pages.clear();
         });
     }
 
     destroy() {
-        // The footer (a player bar) is a singleton shared across rebuilds:
-        // detached rather than taken down with this instance's actors.
-        if (this._footer && this._footer.get_parent() === this.actor)
-            this.actor.remove_child(this._footer);
-        this._footer = null;
+        // The player bar is a singleton shared across rebuilds: detached
+        // rather than taken down with this instance's actors.
+        if (this._bar && this._bar.get_parent() === this.actor)
+            this.actor.remove_child(this._bar);
+        this._bar = null;
         this.actor.destroy();
     }
 
@@ -131,12 +132,12 @@ export class LibraryView {
         if (!this._key)
             return;
         this.header.setActive(this._key);
-        // The footer's height comes off every page's budget, so it is
-        // measured before the first page is built rather than after: on the
-        // stage, where it has a theme to answer with, which every place the
-        // library opens in puts it on before showing it.
+        // The bar's height comes off every page's budget, so it is measured
+        // before the first page is built rather than after: on the stage,
+        // where it has a theme to answer with, which every place the library
+        // opens in puts it on before showing it.
         if (!this._pages.size)
-            this._measureFooter();
+            this._measureBar();
         const page = this._page(this._key);
         for (const other of this._pages.values())
             other.actor.visible = other === page;
@@ -161,43 +162,43 @@ export class LibraryView {
         });
     }
 
-    // The slot under the grid, for a player bar (app.js), or null to clear
-    // it. The grid's own budget shrinks by whatever height the footer takes,
-    // so every page already built has to be built again against the new one.
-    setFooter(actor = null) {
-        if (actor === this._footer)
+    // The player bar (app.js) into its slot under the tabs, or null to clear
+    // it. The grid's own budget shrinks by whatever height the bar takes, so
+    // every page already built has to be built again against the new one.
+    setBar(actor = null) {
+        if (actor === this._bar)
             return;
-        if (this._footer)
-            this.actor.remove_child(this._footer);
-        this._footer = actor;
+        if (this._bar)
+            this.actor.remove_child(this._bar);
+        this._bar = actor;
         if (actor)
-            this.actor.add_child(actor);
-        this._scheduleFooterRecheck();
+            this.actor.insert_child_at_index(actor, 1);
+        this._scheduleBarRecheck();
     }
 
-    // Every caller builds this view, sets the footer, and only then puts the
-    // view on the stage, and a footer measured off the stage has no theme to
+    // Every caller builds this view, sets the bar, and only then puts the
+    // view on the stage, and a bar measured off the stage has no theme to
     // answer with. `show` measures it once the view is there, before its
-    // first page; this idle is the backstop for a footer set later, when the
+    // first page; this idle is the backstop for a bar set later, when the
     // pages already built are built again against the real height.
-    _scheduleFooterRecheck() {
-        if (this._footerRecheckId)
+    _scheduleBarRecheck() {
+        if (this._barRecheckId)
             return;
-        this._footerRecheckId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            this._footerRecheckId = 0;
-            this._measureFooter();
+        this._barRecheckId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._barRecheckId = 0;
+            this._measureBar();
             return GLib.SOURCE_REMOVE;
         });
     }
 
-    _measureFooter() {
+    _measureBar() {
         if (!this.actor.get_stage())
             return;
         ensureStyleDeep(this.actor);
-        const height = this._footer ? Math.max(0, this._footer.get_preferred_height(-1)[1]) : 0;
-        if (height === this._footerHeight)
+        const height = this._bar ? Math.max(0, this._bar.get_preferred_height(-1)[1]) : 0;
+        if (height === this._barHeight)
             return;
-        this._footerHeight = height;
+        this._barHeight = height;
         // Pages built against the old height are built again; none yet is
         // the usual case, `show` having asked before its first.
         if (!this._pages.size)
@@ -242,7 +243,7 @@ export class LibraryView {
         const section = this._sections.find(s => s.key === key);
         const items = this._itemsFor(key);
         const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        const height = this._height - HEADER_ALLOWANCE * scale - this._footerHeight;
+        const height = this._height - HEADER_ALLOWANCE * scale - this._barHeight;
         let view = null;
         let actor;
         if (!items.length) {
@@ -257,10 +258,9 @@ export class LibraryView {
             });
         } else if (section.shelves) {
             // Listen Now: a vertical scroll of one-row grids. Given the same
-            // box a grid gets (short of the footer already), so its tiles come
-            // out the size a tab's do and its ScrollView ends above the bar
-            // instead of filling the whole (unclipped) stack and running
-            // behind it.
+            // box a grid gets (short of the bar already), so its tiles come
+            // out the size a tab's do and its ScrollView ends where the page
+            // does instead of filling the whole (unclipped) stack.
             const shelf = new ShelfView({
                 section,
                 shelves: items,

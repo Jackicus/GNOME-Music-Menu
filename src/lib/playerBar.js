@@ -1,11 +1,12 @@
-// The player bar: a compact, centred card under a library's tabs
-// (libraryView's footer slot; the CSS width caps it to the grid's own block
-// rather than the full screen). Art, title and artist on the left, clickable
-// through to Now Playing, and the shared transport and scrubber
-// (playerWidgets.js) in the middle. With no track it shrinks
-// (`mm-player-bar-compact`) to a "Not Playing" line — or a Start button when
-// the engine itself is down, which is polled for while nothing plays and the
-// bar is actually on screen: a bar in a library that is put away asks nothing.
+// The player bar: a centred card between a library's tabs and its grid,
+// where the app grid keeps its row of workspaces (libraryView's slot for
+// it; the CSS width caps it to the grid's own block rather than the full
+// screen). Art, title and artist on the left, clickable through to Now
+// Playing, and the shared transport and scrubber (playerWidgets.js) in the
+// middle. With no track it says "Not Playing" — or offers a Start button
+// when the engine itself is down, which is polled for while nothing plays
+// and the bar is actually on screen: a bar in a library that is put away
+// asks nothing. One height either way, so the grid under it never moves.
 
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
@@ -44,7 +45,7 @@ export class PlayerBar {
             accessible_name: 'Now Playing',
         });
         this._left.connect('clicked', () => onOpenNowPlaying?.());
-        const left = new St.BoxLayout({y_align: Clutter.ActorAlign.CENTER});
+        const left = new St.BoxLayout({style_class: 'mm-player-bar-lockup', y_align: Clutter.ActorAlign.CENTER});
         this._art = createRemoteArt({styleClass: 'mm-player-bar-art', size: 40});
         left.add_child(this._art);
         const meta = new St.BoxLayout({
@@ -90,14 +91,12 @@ export class PlayerBar {
         this._left.visible = !!track;
         this._transport.actor.visible = !!track;
         if (track) {
-            this.actor.remove_style_class_name('mm-player-bar-compact');
             this._empty.hide();
             this._start.hide();
             this._title.text = track.title;
             this._artist.text = track.artist;
             this._art.setUrl(track.artUrl);
         } else {
-            this.actor.add_style_class_name('mm-player-bar-compact');
             this._showEngineState();
         }
         this._syncEnginePoll();
