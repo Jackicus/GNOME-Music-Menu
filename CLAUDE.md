@@ -45,7 +45,16 @@ MusicKit's own, not the system's: it rides with each `now-playing` answer,
 is set through `am.py volume` (the sets coalesced, the latest waiting behind
 the one out), and Apple's page keeps it across restarts; another player's is
 its MPRIS `Volume`. Mute is volume nought, the level remembered to come back to.
-`library.js` only reads `library.json`; `am.py sync` is the only writer.
+`library.js` only reads `library.json`; `am.py sync` is the only writer,
+and it writes once per sync, after the artwork has landed. The read is
+asynchronous and carries a stamp of the content (`generated` left out), so
+a sync that changed nothing is no rebuild, and a fresh file found while a
+pick, a search or a room is up waits until they are not (`app.js`
+`_scheduleRebuild`). Whether a cover is actually on disk is decided by the
+tile that draws it (`widgets.js` `createArtwork`), not up front. An item
+fetched on demand (`am.py item`, for a shelf's or a search's) is left in
+`<cache>/items/` and read back from there first (`readCachedItem`), so a
+second open needs no spawn; the pane shows skeleton rows meanwhile.
 `shelfView.js` builds Listen Now shelves as one-row instances of the same
 grid view the tabs use, so they page and focus like everything else.
 `searchProvider.js` is Apple Music in the shell's own overview search:
@@ -69,8 +78,12 @@ as a room (`libraryView.js` `openRoom`), its shelves from `am.py category`.
 Schema `org.gnome.shell.extensions.music-menu`. Mostly Video Menu's
 (layout, shortcuts, `keys-*`/`pad-*`, gamepad) plus per-tab `*-enabled`
 toggles, engine options (`browser-command`, `engine-port`,
-`engine-headless`, `engine-autostart`), `sync-interval`, `player-bar` and
-`last-sync`. The schema XML is the source of truth.
+`engine-headless`, `engine-autostart`), `sync-interval`, `player-bar`,
+`last-sync`, and the Performance group: `thumb-size` and `cover-size`
+(read by `am.py sync`, which stores artwork at those sizes; the thumb size
+is recorded in `<cache>/art/.sizes` and a change rebuilds the thumbnails
+from the covers) and `pages-ahead` (how many grid pages are built past the
+one showing). The schema XML is the source of truth.
 
 ## Working on it
 
@@ -93,6 +106,19 @@ with drawn art — screenshots come from that, never from a real account.
 - **GNOME 50 focus:** `St.FocusManager` handles arrow keys in the capture
   phase from the outermost focus group, so key handlers inside our views never
   see them while a tile is focused. Row-to-row movement is St's spatial search.
+- **Artwork costs what its file is:** St loads a CSS `background-image`
+  synchronously on the compositor thread, at the file's own size
+  (`st_texture_cache_load_file_to_cogl_texture`), and keeps it in the texture
+  cache for the session with no bound but the file changing. So a page of
+  tiles' first paint is one JPEG decode per tile, and every cover ever shown
+  stays in memory — which is why tiles draw the 256px thumbnail rather than
+  the cover, why the sizes are settings, and why grids build only the pages
+  in reach. Don't hand St a big image for a small box.
+- **Every `am.py` call is a Python start:** the command path imports only
+  what a command needs (gi, urllib, the thread pool and ssl are lazy), so a
+  play, a search or the player's poll is a few dozen milliseconds, not a
+  hundred and more. Keep new imports out of module scope in `sync.py`
+  unless normalising needs them.
 - **Coexisting with Video Menu and Games Menu:** all three can be enabled at
   once. Registered classes are `MusicMenu*`-prefixed, stylesheet classes
   `mm-`-prefixed, and anything that wraps a private shell method uses the

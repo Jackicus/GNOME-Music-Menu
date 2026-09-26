@@ -111,6 +111,15 @@ mix them.
 | **Desktop** | On the wallpaper of the workspace you're on | In place of the grid |
 | **Workspaces** | On a workspace of its own | On a workspace of its own |
 
+## On a slower machine
+
+The **General** page's **Performance** group is the knobs that matter: the
+size the sync stores thumbnails and covers at (smaller is quicker to draw
+and lighter on memory — every cover shown stays decoded for the session),
+how many pages of covers are built ahead of the one showing, and the
+artwork cache itself, with its size on disk and a button to clear it.
+Artwork sizes take effect at the next sync.
+
 ## Troubleshooting
 
 `make logs` shows what went wrong in the shell. For the Apple Music side —
