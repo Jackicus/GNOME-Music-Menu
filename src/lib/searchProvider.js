@@ -24,9 +24,10 @@
 // One `am.py search` serves every section: search.js's `_doSearch` puts a
 // search to each provider in turn, in the same round, so the first to ask
 // starts the pause after the keystroke and all of them get the one answer
-// (`Shared`). The completions are a second call, `am.py suggest`. Neither
-// ever starts the engine (`--no-start`): typing in the overview must not
-// launch Chrome.
+// (`Shared`) — the completions too, which the same call asks Apple for
+// alongside the search (`--suggest`), so a pause in typing is one process
+// and not two. It never starts the engine (`--no-start`): typing in the
+// overview must not launch Chrome.
 //
 // Giving a provider an `appInfo` (name + icon) is what earns it the
 // labelled row search.js draws above its results (`_ensureProviderDisplay`:
@@ -71,8 +72,10 @@ import {cacheRemoteArt} from './playerUtil.js';
 // Among every provider, nothing before the third letter: a letter or two
 // is anyone's, and a search is a process and a round trip to Chrome.
 const MIN_CHARS = 3;
-// The pause after the last keystroke before a search goes out.
-const DEBOUNCE_MS = 250;
+// The pause after the last keystroke before a search goes out. On top of
+// the shell's own: search.js waits 150ms after the first keystroke of a
+// burst before it asks anyone, so this is the trailing part alone.
+const DEBOUNCE_MS = 100;
 // Hits asked for: the one list among every provider; per kind, for the
 // sections of a search that is Apple Music's alone.
 const RESULT_LIMIT = 12;
@@ -131,30 +134,29 @@ function itemKey(item) {
 }
 
 // One `am.py` call per pause in typing, shared by everyone who asks for
-// the same terms: a pending call is dropped in favour of newer terms, and
-// cancelling (the search superseded, or the overview closing) resolves to
-// nothing instead of rejecting, so nothing gets logged as a provider
+// the same command: a pending call is dropped in favour of a newer one,
+// and cancelling (the search superseded, or the overview closing) resolves
+// to nothing instead of rejecting, so nothing gets logged as a provider
 // error over what is just a keystroke arriving late. An answer is kept
-// for as long as its terms stand, so a section asking a moment after
+// for as long as its command stands, so a section asking a moment after
 // another gets it at once. A failure answers `{error}` with `am.py`'s
 // code, for the one section that says so.
 class Shared {
-    // `argv(query)` is the command to run for a query.
-    constructor(argv) {
-        this._argv = argv;
-        this._query = null;
+    constructor() {
+        this._key = null;
         this._promise = null;
         this._timer = 0;
     }
 
-    ask(query, cancellable) {
-        if (this._promise && this._query === query)
+    ask(argv, cancellable) {
+        const key = argv.join('\n');
+        if (this._promise && this._key === key)
             return this._promise;
         this._drop();
-        this._query = query;
+        this._key = key;
         this._promise = new Promise(resolve => {
             const cancelId = cancellable.connect(() => {
-                if (this._query === query)
+                if (this._key === key)
                     this._drop();
                 resolve(null);
             });
@@ -164,7 +166,7 @@ class Shared {
                     resolve(null);
                     return GLib.SOURCE_REMOVE;
                 }
-                run(this._argv(query), {cancellable})
+                run(argv, {cancellable})
                     .then(answer => resolve(answer), e => resolve({error: e?.code ?? 'error'}))
                     .finally(() => cancellable.disconnect(cancelId));
                 return GLib.SOURCE_REMOVE;
@@ -181,7 +183,7 @@ class Shared {
         if (this._timer)
             GLib.source_remove(this._timer);
         this._timer = 0;
-        this._query = null;
+        this._key = null;
         this._promise = null;
     }
 }
@@ -275,8 +277,7 @@ export class MusicSearch {
         // so a result can be turned back into an Item when the shell asks
         // for its meta or activates it.
         this._items = new Map();
-        this._searches = new Shared(query => ['--no-start', 'search', query, '--limit', String(PER_KIND)]);
-        this._suggestions = new Shared(query => ['--no-start', 'suggest', query, '--limit', String(SUGGESTIONS)]);
+        this._searches = new Shared();
 
         this._shared = new Provider(this, {id: 'apple-music', gicon, canLaunchSearch: true});
         this._top = new Provider(this, {id: 'apple-music-top', key: 'top', maxResults: TOP_RESULTS});
@@ -296,7 +297,6 @@ export class MusicSearch {
         for (const provider of this._providers)
             Main.overview.searchController.removeProvider(provider);
         this._searches.drop();
-        this._suggestions.drop();
     }
 
     // Whether `provider` is one of these — for mediaMenu.js, which keeps
@@ -307,36 +307,42 @@ export class MusicSearch {
 
     // A provider's answer to `terms`: result ids, or a status row's.
     // Whether the search is Apple Music's alone is taken as it is asked,
-    // before the pause.
+    // before the pause — and decides the one command every section of that
+    // round shares: with the completions, for a search that is Apple
+    // Music's alone, and without them among every provider, where no
+    // section shows them.
     answer(provider, terms, cancellable) {
         const query = terms.join(' ').trim();
         const exclusive = this.exclusive;
         if (provider === this._shared) {
             if (exclusive)
-                return this._askSearch(query, cancellable, answer => answer?.error && STATUS[answer.error] ? [STATUS_PREFIX + answer.error] : []);
+                return this._askSearch(query, exclusive, cancellable, answer => answer?.error && STATUS[answer.error] ? [STATUS_PREFIX + answer.error] : []);
             if (query.length < MIN_CHARS)
                 return Promise.resolve([]);
-            return this._askSearch(query, cancellable, answer => this._register(answer?.items).slice(0, RESULT_LIMIT));
+            return this._askSearch(query, exclusive, cancellable, answer => this._register(answer?.items).slice(0, RESULT_LIMIT));
         }
         if (!exclusive || !query)
             return Promise.resolve([]);
         if (provider.key === 'suggest') {
-            return this._suggestions.ask(query, cancellable).then(answer => {
+            return this._askSearch(query, exclusive, cancellable, answer => {
                 const terms = Array.isArray(answer?.terms) ? answer.terms : [];
                 return terms.slice(0, SUGGESTIONS).map(({term}) => SUGGEST_PREFIX + term);
             });
         }
-        return this._askSearch(query, cancellable, answer => {
+        return this._askSearch(query, exclusive, cancellable, answer => {
             const shelf = answer?.shelves?.find(s => s.key === provider.key);
             const ids = this._register(shelf?.items);
             return provider === this._top ? ids.slice(0, TOP_RESULTS) : ids;
         });
     }
 
-    _askSearch(query, cancellable, take) {
+    _askSearch(query, exclusive, cancellable, take) {
         if (!query)
             return Promise.resolve([]);
-        return this._searches.ask(query, cancellable).then(answer => answer ? take(answer) : []);
+        const argv = ['--no-start', 'search', query, '--limit', String(PER_KIND)];
+        if (exclusive)
+            argv.push('--suggest', String(SUGGESTIONS));
+        return this._searches.ask(argv, cancellable).then(answer => answer ? take(answer) : []);
     }
 
     // The hits kept, and their ids in order.
