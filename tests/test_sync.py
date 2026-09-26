@@ -466,6 +466,27 @@ class TestSync(unittest.TestCase):
         self.assertEqual(len(artists[0]["groups"]), 1)
         self.assertEqual(artists[0]["groups"][0]["name"], "Album One")
 
+    def test_artist_takes_first_albums_thumbnail_with_its_cover(self):
+        sync.ART_URLS.clear()
+        song = {
+            "id": "s1", "type": "library-songs",
+            "attributes": {
+                "name": "Track A", "artistName": "Artist One", "albumName": "Album One",
+                "trackNumber": 1, "discNumber": 1, "durationInMillis": 1000,
+                "artwork": {"url": "https://x/{w}x{h}bb.jpg", "bgColor": "123456"},
+            },
+            "relationships": {"albums": {"data": [{
+                "id": "l.alb1", "type": "library-albums",
+                "attributes": {"name": "Album One", "artistName": "Artist One",
+                               "artwork": {"url": "https://x/{w}x{h}bb.jpg", "bgColor": "123456"}},
+            }]}},
+        }
+        albums, artists = sync.group_songs_into_albums_and_artists([song], self.tmp_dir)
+        self.assertEqual(artists[0]["art"], albums[0]["art"])
+        self.assertEqual(artists[0]["thumb"], albums[0]["thumb"])
+        self.assertTrue(artists[0]["thumb"].startswith(os.path.join(self.tmp_dir, "thumb")))
+        self.assertEqual(artists[0]["artColor"], "#123456")
+
     def test_save_library_and_merge(self):
         initial = {
             "version": 1,
@@ -539,8 +560,13 @@ class TestSync(unittest.TestCase):
             "shelves": [],
         }
 
+        marker = os.path.join(art_dir, ".sizes")
+        with open(marker, "w") as f:
+            f.write('{"cover": 512, "thumb": 256}')
+
         pruned = sync.prune_art(lib_data, self.tmp_dir)
         self.assertEqual(pruned, 2)
+        self.assertTrue(os.path.exists(marker))
         self.assertTrue(os.path.exists(used_file))
         self.assertTrue(os.path.exists(used_thumb))
         self.assertTrue(os.path.exists(row_thumb))
@@ -628,11 +654,12 @@ class TestArtworkDownload(unittest.TestCase):
         self.assertEqual(counts["failed"], 2)
         self.assertEqual(len(logged), 2)
 
-    @unittest.skipIf(sync.GdkPixbuf is None, "GdkPixbuf not available")
+    @unittest.skipIf(sync.pixbuf() is None, "GdkPixbuf not available")
     def test_thumbnail_is_scaled_from_the_cached_cover(self):
+        GdkPixbuf = sync.pixbuf()
         item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
         os.makedirs(os.path.dirname(item["art"]), exist_ok=True)
-        cover = sync.GdkPixbuf.Pixbuf.new(sync.GdkPixbuf.Colorspace.RGB, False, 8, 512, 512)
+        cover = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 512, 512)
         cover.fill(0x336699ff)
         cover.savev(item["art"], "jpeg", ["quality"], ["80"])
         # Nothing is fetched: the cover is on disk.
@@ -643,8 +670,8 @@ class TestArtworkDownload(unittest.TestCase):
         finally:
             sync.cache_artwork = real
         self.assertEqual(counts, {"wanted": 1, "fetched": 1, "failed": 0})
-        thumb = sync.GdkPixbuf.Pixbuf.new_from_file(item["thumb"])
-        self.assertEqual((thumb.get_width(), thumb.get_height()), (sync.THUMB_SIZE, sync.THUMB_SIZE))
+        thumb = GdkPixbuf.Pixbuf.new_from_file(item["thumb"])
+        self.assertEqual((thumb.get_width(), thumb.get_height()), (sync.ART_SIZES["thumb"], sync.ART_SIZES["thumb"]))
 
     def test_download_item_art_takes_the_rows_thumbnails_too(self):
         raw = {"id": "p.one", "type": "library-playlists",
@@ -680,3 +707,106 @@ class TestArtworkDownload(unittest.TestCase):
         self.assertEqual(albums[0]["subtitle"], "Kana")
         self.assertIsNotNone(albums[0]["art"])
         self.assertEqual(artists[0]["title"], "Kana")
+
+
+class TestArtSizes(unittest.TestCase):
+    """The cover and thumbnail sizes: set per sync, recorded beside the
+    covers, read back by every other command."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        sync.ART_URLS.clear()
+        sync.ART_SIZES.update(sync.DEFAULT_ART_SIZES)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir)
+        sync.ART_URLS.clear()
+        sync.ART_SIZES.update(sync.DEFAULT_ART_SIZES)
+
+    def test_defaults_without_a_marker(self):
+        self.assertEqual(sync.load_art_sizes(self.tmp_dir), {"cover": 512, "thumb": 256})
+
+    def test_apply_writes_the_marker_and_clamps(self):
+        self.assertEqual(sync.apply_art_sizes(self.tmp_dir, 768, 128), {"cover": 768, "thumb": 128})
+        with open(os.path.join(self.tmp_dir, "art", ".sizes")) as f:
+            self.assertEqual(json.load(f), {"cover": 768, "thumb": 128})
+        sync.ART_SIZES.update(sync.DEFAULT_ART_SIZES)
+        self.assertEqual(sync.load_art_sizes(self.tmp_dir), {"cover": 768, "thumb": 128})
+        self.assertEqual(sync.ART_SIZES, {"cover": 768, "thumb": 128})
+        # Out of range, or not a number: the nearest sane size, or the one standing.
+        self.assertEqual(sync.apply_art_sizes(self.tmp_dir, 9000, 10), {"cover": 1024, "thumb": 96})
+        self.assertEqual(sync.apply_art_sizes(self.tmp_dir, "x", None), {"cover": 1024, "thumb": 96})
+
+    def test_sizes_name_the_urls(self):
+        sync.apply_art_sizes(self.tmp_dir, 640, 192)
+        item = sync.normalize_album({"id": "l.one", "type": "library-albums", "attributes": {
+            "name": "One", "artistName": "A", "artwork": {"url": "https://x/{w}x{h}bb.jpg"}}}, cache_dir=self.tmp_dir)
+        self.assertEqual(sync.ART_URLS[item["art"]], "https://x/640x640bb.jpg")
+        self.assertEqual(sync.ART_URLS[item["thumb"]], "https://x/192x192bb.jpg")
+        # A search hit without a cover on disk takes the thumbnail's size.
+        hit = {"art": item["art"], "thumb": item["thumb"]}
+        sync._settle_search_art(hit, {"attributes": {"artwork": {"url": "https://x/{w}x{h}bb.jpg"}}})
+        self.assertEqual(hit["art"], "https://x/192x192bb.jpg")
+        self.assertIsNone(hit["thumb"])
+
+    def test_changed_thumb_size_wipes_the_thumbnails(self):
+        thumb_dir = os.path.join(self.tmp_dir, "thumb")
+        os.makedirs(thumb_dir)
+        with open(os.path.join(thumb_dir, "a.jpg"), "wb") as f:
+            f.write(b"old")
+        # The same size as the (implied) default: nothing happens.
+        sync.apply_art_sizes(self.tmp_dir, 512, 256)
+        self.assertTrue(os.path.exists(os.path.join(thumb_dir, "a.jpg")))
+        # A changed cover size alone: the thumbnails stay too.
+        sync.apply_art_sizes(self.tmp_dir, 768, 256)
+        self.assertTrue(os.path.exists(os.path.join(thumb_dir, "a.jpg")))
+        # A changed thumbnail size: they go, to be rebuilt from the covers.
+        sync.apply_art_sizes(self.tmp_dir, 768, 128)
+        self.assertEqual(os.listdir(thumb_dir), [])
+
+
+class TestOtherCaches(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir)
+
+    def test_prune_remote_art_keeps_the_newest_within_budget(self):
+        folder = os.path.join(self.tmp_dir, "remote-art")
+        os.makedirs(folder)
+        for i in range(5):
+            path = os.path.join(folder, f"{i}.img")
+            with open(path, "wb") as f:
+                f.write(b"x" * 100)
+            os.utime(path, (1000 + i, 1000 + i))
+        self.assertEqual(sync.prune_remote_art(self.tmp_dir, max_bytes=250), 3)
+        self.assertEqual(sorted(os.listdir(folder)), ["3.img", "4.img"])
+        self.assertEqual(sync.prune_remote_art(self.tmp_dir, max_bytes=250), 0)
+        self.assertEqual(sync.prune_remote_art(os.path.join(self.tmp_dir, "nowhere")), 0)
+
+    def test_answer_paths_are_safe_names(self):
+        self.assertEqual(sync.item_cache_path(self.tmp_dir, "album", "l.abc/../x"),
+                         os.path.join(self.tmp_dir, "items", "album-l.abc_.._x.json"))
+        self.assertEqual(sync.category_cache_path(self.tmp_dir, "98 85/81"),
+                         os.path.join(self.tmp_dir, "categories", "98_85_81.json"))
+        self.assertEqual(sync.landing_cache_path(self.tmp_dir), os.path.join(self.tmp_dir, "landing.json"))
+
+    def test_answers_are_kept_and_age_out(self):
+        path = sync.item_cache_path(self.tmp_dir, "album", "1")
+        self.assertIsNone(sync.read_answer(path, 60))
+        kept = sync.write_answer(path, {"id": "1", "groups": []})
+        self.assertIn("cached", kept)
+        self.assertEqual(sync.read_answer(path, 60)["id"], "1")
+        # Older than allowed: as good as none.
+        with open(path, "r+", encoding="utf-8") as f:
+            data = json.load(f)
+            data["cached"] = "2000-01-01T00:00:00Z"
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f)
+        self.assertIsNone(sync.read_answer(path, 60))
+        # Unreadable: none.
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.assertIsNone(sync.read_answer(path, 60))

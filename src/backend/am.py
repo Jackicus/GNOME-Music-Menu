@@ -11,19 +11,19 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
-import signal
-import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
 # Ensure backend directory is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from cdp import CDPClient, connect_to_chrome
+from cdp import CDPClient, connect_to_chrome, http_get_json
 import sync
+
+# Nothing else is imported at load. Every command is its own process, and
+# most — the player's poll, a search, a volume set — are over in a moment
+# once the interpreter is up; what starting or stopping Chrome needs is
+# imported by the two functions that do that.
 
 
 class AmError(Exception):
@@ -111,6 +111,8 @@ SETTING_DEFAULTS = {
     "engine-port": 9227,
     "engine-headless": True,
     "engine-autostart": True,
+    "cover-size": sync.DEFAULT_ART_SIZES["cover"],
+    "thumb-size": sync.DEFAULT_ART_SIZES["thumb"],
 }
 
 
@@ -199,12 +201,8 @@ def remove_state():
 
 def is_port_responding(port, timeout=1):
     try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/json",
-            headers={"User-Agent": "MusicMenu/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status == 200
+        http_get_json(port, "/json", timeout=timeout)
+        return True
     except Exception:
         return False
 
@@ -222,6 +220,7 @@ def engine_status():
 
 
 def engine_stop():
+    import signal
     state = get_state()
     if state:
         pid = state.get("pid")
@@ -291,6 +290,9 @@ def ensure_bridge(client, timeout=15):
 
 
 def engine_start(headless=None):
+    import shutil
+    import subprocess
+
     if headless is None:
         headless = get_setting("engine-headless")
 
@@ -499,6 +501,9 @@ def handle_sync(only=None, no_start=False):
             raise AmError("not-signed-in", "User is not signed in to Apple Music")
 
         cache_dir = get_cache_dir()
+        # The sizes this sync builds at, from the settings, before anything
+        # names a file: a changed thumbnail size wipes the old thumbnails.
+        sync.apply_art_sizes(cache_dir, get_setting("cover-size"), get_setting("thumb-size"))
         previous = _previous_library(cache_dir)
         counts = {"albums": 0, "artists": 0, "playlists": 0, "radio": 0, "shelves": 0}
         sections = {}
@@ -588,12 +593,21 @@ def handle_sync(only=None, no_start=False):
             "sections": sections,
             "shelves": shelves,
         }
-        # The listing first, so it is on disk whatever the artwork does; the
-        # artwork next, in threads; the pruning last, against the merged file.
+        # The artwork first, in threads, and the listing only once it is on
+        # disk: the shell rebuilds on every write of library.json and looks
+        # for a tile's artwork as it builds the tile, so a listing written
+        # ahead of its covers showed placeholders until the next sync. A
+        # failure fetching is only logged; the listing is written regardless.
+        try:
+            counts["art"] = sync.download_art(lib_data, cache_dir, log=_log)
+        except Exception as e:
+            _log(f"sync: artwork: {e}")
+            counts["art"] = {"wanted": 0, "fetched": 0, "failed": 0}
         sync.save_library(lib_data, cache_dir, only=only)
-        art = sync.download_art(lib_data, cache_dir, log=_log)
-        counts["art"] = art
+        # The pruning last, against the merged file; and the covers the
+        # shell fetched for itself, trimmed to a budget.
         sync.prune_art(_previous_library(cache_dir) or lib_data, cache_dir)
+        sync.prune_remote_art(cache_dir)
         set_setting("last-sync", now_iso)
 
         return {"counts": counts, "generated": now_iso}
@@ -607,6 +621,7 @@ def handle_item(kind, item_id, no_start=False):
         st = client.evaluate("window.__musicMenu.status()")
         sf = st.get("storefront", "us") if st else "us"
         cache_dir = get_cache_dir()
+        sync.load_art_sizes(cache_dir)
 
         is_lib = item_id.startswith("l.") or item_id.startswith("p.") or item_id.startswith("r.")
         if kind == "album":
@@ -665,9 +680,14 @@ def handle_item(kind, item_id, no_start=False):
                 res_i = answers[i] if i < len(answers) else None
                 alb_data = res_i.get("data", []) if isinstance(res_i, dict) else []
                 full_albums.append(alb_data[0] if alb_data else stub)
-            return sync.download_item_art(sync.normalize_artist(artist_obj, cache_dir, albums=full_albums), cache_dir)
-
-        return sync.download_item_art(sync.normalize_item(raw_obj, cache_dir, include_groups=True), cache_dir)
+            item = sync.normalize_artist(artist_obj, cache_dir, albums=full_albums)
+        else:
+            item = sync.normalize_item(raw_obj, cache_dir, include_groups=True)
+        # Fetched fresh whenever asked, and the answer kept where the shell
+        # reads it back without a process: the second look at a shelf's
+        # album is instant, and the first after a restart too.
+        sync.download_item_art(item, cache_dir)
+        return sync.write_answer(sync.item_cache_path(cache_dir, kind, item_id), item)
     finally:
         client.close()
 
@@ -880,11 +900,24 @@ def handle_lyrics(song_id, no_start=False):
         client.close()
 
 
-def handle_search(term, library=False, limit=20, no_start=False):
+def handle_search(term, library=False, limit=20, suggest=0, no_start=False):
+    """`suggest` > 0 asks for that many of Apple's completions of the term
+    as well, in the same round trip, answered as `terms` beside the
+    shelves — one process for the shell's search instead of two."""
     client = get_bridge_client(no_start=no_start)
     try:
+        cache_dir = get_cache_dir()
+        sync.load_art_sizes(cache_dir)
+        if suggest > 0:
+            res = client.evaluate(
+                f"window.__musicMenu.searchAndSuggest({json.dumps(term)}, {json.dumps(library)}, "
+                f"{int(limit)}, {int(suggest)})", await_promise=True)
+            res = res if isinstance(res, dict) else {}
+            out = sync.search_results(res.get("search"), cache_dir)
+            out["terms"] = sync.search_suggestions(res.get("suggestions"), cache_dir)["terms"][:int(suggest)]
+            return out
         res = client.evaluate(f"window.__musicMenu.search({json.dumps(term)}, {json.dumps(library)}, {int(limit)})", await_promise=True)
-        return sync.search_results(res, get_cache_dir())
+        return sync.search_results(res, cache_dir)
     except Exception as e:
         raise AmError("api", f"Search failed: {e}")
     finally:
@@ -894,34 +927,53 @@ def handle_search(term, library=False, limit=20, no_start=False):
 def handle_suggest(term, limit=10, no_start=False):
     client = get_bridge_client(no_start=no_start)
     try:
+        cache_dir = get_cache_dir()
+        sync.load_art_sizes(cache_dir)
         res = client.evaluate(f"window.__musicMenu.suggest({json.dumps(term)}, {int(limit)})", await_promise=True)
-        return sync.search_suggestions(res, get_cache_dir())
+        return sync.search_suggestions(res, cache_dir)
     except Exception as e:
         raise AmError("api", f"Suggestions failed: {e}")
     finally:
         client.close()
 
 
+# How long a kept answer stands for: Apple's search page changes its
+# categories rarely, and a category's shelves are the week's.
+ANSWER_MAX_AGE = 24 * 60 * 60
+
+
 def handle_landing(no_start=False):
+    cache_dir = get_cache_dir()
+    kept = sync.read_answer(sync.landing_cache_path(cache_dir), ANSWER_MAX_AGE)
+    if kept is not None:
+        return kept
     client = get_bridge_client(no_start=no_start)
     try:
+        sync.load_art_sizes(cache_dir)
         res = client.evaluate("window.__musicMenu.searchLanding()", await_promise=True)
-        return sync.search_landing(res, get_cache_dir())
+        answer = sync.search_landing(res, cache_dir)
     except Exception as e:
         raise AmError("api", f"Search landing failed: {e}")
     finally:
         client.close()
+    return sync.write_answer(sync.landing_cache_path(cache_dir), answer)
 
 
 def handle_category(category_id, no_start=False):
+    cache_dir = get_cache_dir()
+    kept = sync.read_answer(sync.category_cache_path(cache_dir, category_id), ANSWER_MAX_AGE)
+    if kept is not None:
+        return kept
     client = get_bridge_client(no_start=no_start)
     try:
+        sync.load_art_sizes(cache_dir)
         res = client.evaluate(f"window.__musicMenu.category({json.dumps(category_id)})", await_promise=True)
-        return sync.category_page(res, get_cache_dir())
+        answer = sync.category_page(res, cache_dir)
     except Exception as e:
         raise AmError("api", f"Category failed: {e}")
     finally:
         client.close()
+    return sync.write_answer(sync.category_cache_path(cache_dir, category_id), answer)
 
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1032,7 @@ def _build_parser():
     s.add_argument("term", nargs="+")
     s.add_argument("--library", action="store_true")
     s.add_argument("--limit", type=int, default=20, metavar="N")
+    s.add_argument("--suggest", type=int, default=0, metavar="N")
     s = cmd("suggest")
     s.add_argument("term", nargs="+")
     s.add_argument("--limit", type=int, default=10, metavar="N")
@@ -1042,7 +1095,7 @@ def run_cli(argv):
         term = " ".join(a.term).strip()
         if not term:
             raise AmError("usage", "search requires a search term")
-        return handle_search(term, library=a.library, limit=a.limit, no_start=ns)
+        return handle_search(term, library=a.library, limit=a.limit, suggest=a.suggest, no_start=ns)
     if c == "suggest":
         term = " ".join(a.term).strip()
         if not term:

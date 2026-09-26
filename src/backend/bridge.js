@@ -166,6 +166,34 @@
         return { synced: synced, lines: lines };
     }
 
+    // The catalog search and its autocomplete, each on its own so that one
+    // call from am.py can run both at once (searchAndSuggest) or either
+    // alone (search, suggest).
+    async function doSearch(term, isLibrary, limit) {
+        const mk = getMusicKit();
+        if (!mk) throw new Error('MusicKit not initialized');
+        const sf = mk.storefrontId || 'us';
+        const types = isLibrary
+            ? 'library-albums,library-artists,library-playlists,library-songs'
+            : 'albums,artists,music-videos,playlists,songs,stations';
+        const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
+        const params = { term: term, types: types, limit: limit || 20 };
+        if (!isLibrary) params.with = 'topResults';
+        return await apiCall(path, params);
+    }
+
+    async function doSuggest(term, limit) {
+        const mk = getMusicKit();
+        if (!mk) throw new Error('MusicKit not initialized');
+        const sf = mk.storefrontId || 'us';
+        return await apiCall(`/v1/catalog/${sf}/search/suggestions`, {
+            term: term,
+            kinds: 'terms,topResults',
+            types: 'albums,artists,music-videos,playlists,songs,stations',
+            limit: limit || 10
+        });
+    }
+
     window.__musicMenu = {
         __version: window.__musicMenuWanted,
         status: function () {
@@ -455,16 +483,7 @@
         // of Apple Music's own search page; the library's search has no
         // such thing.
         search: async function (term, isLibrary, limit) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
-            const sf = mk.storefrontId || 'us';
-            const types = isLibrary
-                ? 'library-albums,library-artists,library-playlists,library-songs'
-                : 'albums,artists,music-videos,playlists,songs,stations';
-            const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
-            const params = { term: term, types: types, limit: limit || 20 };
-            if (!isLibrary) params.with = 'topResults';
-            return await apiCall(path, params);
+            return await doSearch(term, isLibrary, limit);
         },
 
         // Apple's own autocomplete for a term half typed: the few searches
@@ -472,15 +491,18 @@
         // for it as it stands (`kind: 'topResults'`), which is what the
         // search box on music.apple.com drops down as it is typed into.
         suggest: async function (term, limit) {
-            const mk = getMusicKit();
-            if (!mk) throw new Error('MusicKit not initialized');
-            const sf = mk.storefrontId || 'us';
-            return await apiCall(`/v1/catalog/${sf}/search/suggestions`, {
-                term: term,
-                kinds: 'terms,topResults',
-                types: 'albums,artists,music-videos,playlists,songs,stations',
-                limit: limit || 10
-            });
+            return await doSuggest(term, limit);
+        },
+
+        // Both at once, in one round trip from am.py: the search's answer
+        // under `search`, the autocomplete's under `suggestions` — or null
+        // there, since a search is not lost for want of its completions.
+        searchAndSuggest: async function (term, isLibrary, limit, suggestLimit) {
+            const results = await Promise.all([
+                doSearch(term, isLibrary, limit),
+                doSuggest(term, suggestLimit).catch(function () { return null; })
+            ]);
+            return { search: results[0], suggestions: results[1] };
         },
 
         // Apple Music's own search page before anything is typed: the

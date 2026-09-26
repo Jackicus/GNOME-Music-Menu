@@ -75,9 +75,11 @@ class Cli(unittest.TestCase):
 
     def test_search(self):
         self.assertEqual(parse(["search", "a", "b", "--limit", "5"]),
-                         ("handle_search", ("a b",), {"library": False, "limit": 5, "no_start": False}))
+                         ("handle_search", ("a b",), {"library": False, "limit": 5, "suggest": 0, "no_start": False}))
         self.assertEqual(parse(["search", "daft punk", "--library"]),
-                         ("handle_search", ("daft punk",), {"library": True, "limit": 20, "no_start": False}))
+                         ("handle_search", ("daft punk",), {"library": True, "limit": 20, "suggest": 0, "no_start": False}))
+        self.assertEqual(parse(["--no-start", "search", "sho", "--limit", "10", "--suggest", "3"]),
+                         ("handle_search", ("sho",), {"library": False, "limit": 10, "suggest": 3, "no_start": True}))
 
     def test_suggest(self):
         self.assertEqual(parse(["suggest", "sho", "--limit", "5", "--no-start"]),

@@ -116,6 +116,55 @@ async function testVolumeIsClampedAndAnswered() {
     assert.deepStrictEqual(await bridge.volume('nonsense'), {volume: 0});
 }
 
+// A window whose MusicKit answers reads by path: `answers` maps a path to
+// what `music()` resolves with, or to an Error to throw.
+function loadReads(answers) {
+    const asked = [];
+    globalThis.window = {
+        MusicKit: {
+            getInstance: () => ({
+                storefrontId: 'gb',
+                api: {
+                    music: async (requestPath, params) => {
+                        asked.push({path: requestPath, params});
+                        const answer = answers[requestPath];
+                        if (answer instanceof Error)
+                            throw answer;
+                        return {data: answer};
+                    },
+                },
+            }),
+        },
+    };
+    vm.runInThisContext(source);
+    return {bridge: window.__musicMenu, asked};
+}
+
+// The search and its completions in one call, each asked for as it is on
+// its own; the completions failing costs the search nothing.
+async function testSearchAndSuggestIsBothAtOnce() {
+    const search = {results: {songs: {data: [{id: '1'}]}}};
+    const suggestions = {results: {suggestions: [{kind: 'terms', searchTerm: 'shout'}]}};
+    const {bridge, asked} = loadReads({
+        '/v1/catalog/gb/search': search,
+        '/v1/catalog/gb/search/suggestions': suggestions,
+    });
+    assert.deepStrictEqual(await bridge.searchAndSuggest('sho', false, 10, 3), {search, suggestions});
+    assert.deepStrictEqual(asked.map(a => a.path), ['/v1/catalog/gb/search', '/v1/catalog/gb/search/suggestions']);
+    assert.deepStrictEqual(asked[0].params, {term: 'sho', types: 'albums,artists,music-videos,playlists,songs,stations', limit: 10, with: 'topResults'});
+    assert.deepStrictEqual(asked[1].params, {term: 'sho', kinds: 'terms,topResults', types: 'albums,artists,music-videos,playlists,songs,stations', limit: 3});
+    // Alone, each is the same request.
+    assert.deepStrictEqual(await bridge.search('sho', false, 10), search);
+    assert.deepStrictEqual(await bridge.suggest('sho', 3), suggestions);
+
+    const failing = loadReads({
+        '/v1/catalog/gb/search': search,
+        '/v1/catalog/gb/search/suggestions': new Error('no completions today'),
+    });
+    assert.deepStrictEqual(await failing.bridge.searchAndSuggest('sho', false, 10, 3), {search, suggestions: null});
+    await rejectsWith(failing.bridge.suggest('sho', 3), 'no completions today');
+}
+
 async function testMissingClientIsAClearError() {
     globalThis.window = {MusicKit: {getInstance: () => ({api: {music: async () => ({})}})}};
     vm.runInThisContext(source);
@@ -130,6 +179,7 @@ async function testMissingClientIsAClearError() {
         testRatingSendsObjectBody,
         testAddToPlaylist,
         testVolumeIsClampedAndAnswered,
+        testSearchAndSuggestIsBothAtOnce,
         testMissingClientIsAClearError,
     ];
     for (const test of tests)

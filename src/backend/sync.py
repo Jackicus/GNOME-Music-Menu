@@ -6,25 +6,38 @@ Python standard library only.
 """
 
 from datetime import datetime, timezone
-import concurrent.futures
-import fcntl
 import hashlib
 import html
 import json
 import os
 import re
-import tempfile
-import urllib.error
-import urllib.request
 
-# For scaling a cached cover down to its thumbnail without fetching it again.
-# PyGObject ships with GNOME; without it thumbnails are downloaded instead.
-try:
-    import gi
-    gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import GdkPixbuf
-except Exception:  # pragma: no cover - depends on the system
-    GdkPixbuf = None
+# Only what normalising an answer needs is imported here. This module is
+# loaded by every am.py command — a search, the player's half-minute poll —
+# and PyGObject alone is fifty milliseconds of a run that should take ten;
+# the thread pool, the fetch and the lock are imported where they are used.
+
+# GdkPixbuf, for scaling a cached cover down to its thumbnail without
+# fetching it again. PyGObject ships with GNOME; without it thumbnails are
+# downloaded instead. Imported the first time a thumbnail is made, never at
+# load.
+_pixbuf = None
+_pixbuf_tried = False
+
+
+def pixbuf():
+    """The GdkPixbuf module, or None where PyGObject is not available."""
+    global _pixbuf, _pixbuf_tried
+    if not _pixbuf_tried:
+        _pixbuf_tried = True
+        try:
+            import gi
+            gi.require_version("GdkPixbuf", "2.0")
+            from gi.repository import GdkPixbuf
+            _pixbuf = GdkPixbuf
+        except Exception:  # pragma: no cover - depends on the system
+            _pixbuf = None
+    return _pixbuf
 
 
 # ---------------------------------------------------------------------------
@@ -112,13 +125,16 @@ def strip_html(text: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def template_artwork_url(url_template: str, width: int = 512, height: int = 512) -> str:
+def template_artwork_url(url_template: str, width: int | None = None, height: int | None = None) -> str:
     """Format an Apple Music artwork URL template by replacing dimensions and formats.
 
-    Replaces {w} with width, {h} with height. Also {f} with 'jpg', {c} with 'bb' if present.
+    Replaces {w} with width, {h} with height (the cover's size unless given).
+    Also {f} with 'jpg', {c} with 'bb' if present.
     """
     if not url_template:
         return ""
+    width = width or ART_SIZES["cover"]
+    height = height or ART_SIZES["cover"]
     return (
         url_template.replace("{w}x{h}", f"{width}x{height}")
         .replace("{w}", str(width))
@@ -128,7 +144,7 @@ def template_artwork_url(url_template: str, width: int = 512, height: int = 512)
     )
 
 
-def format_artwork_url(artwork_obj, width: int = 512, height: int = 512) -> str | None:
+def format_artwork_url(artwork_obj, width: int | None = None, height: int | None = None) -> str | None:
     """Convenience wrapper for dict artwork object or string template."""
     if not artwork_obj:
         return None
@@ -154,12 +170,85 @@ def artwork_cache_path(url: str, cache_dir: str) -> str:
     return os.path.join(cache_dir, "art", artwork_filename(url))
 
 
-# The tile size. A cover is drawn at around a hundred logical pixels on a
-# tile and a few dozen on a track row, and the shell paints a rounded cover
-# through cairo at the source image's size, so tiles take a copy scaled to
-# this rather than the 512 the hero shows. Named after the same URL as the
-# full-size file, so <cache>/thumb/<x>.jpg is the thumbnail of <cache>/art/<x>.jpg.
-THUMB_SIZE = 256
+# The two sizes artwork is kept at, in pixels. The cover is the hero in the
+# detail pane; the thumbnail is the copy the tiles and the track rows draw —
+# a cover is drawn at around a hundred logical pixels on a tile and a few
+# dozen on a row, and the shell decodes a background image whole, on the
+# compositor thread, the first time a tile is painted, so a page of tiles
+# costs a page of decodes at this size. Named after the same URL as the
+# full-size file, so <cache>/thumb/<x>.jpg is the thumbnail of
+# <cache>/art/<x>.jpg. These are the defaults; the `cover-size` and
+# `thumb-size` settings set them per sync, and the marker file beside the
+# covers tells every other command what a cache was built at.
+DEFAULT_ART_SIZES = {"cover": 512, "thumb": 256}
+ART_SIZES = dict(DEFAULT_ART_SIZES)
+ART_SIZE_LIMITS = {"cover": (256, 1024), "thumb": (96, 512)}
+
+
+def _art_sizes_marker(cache_dir: str) -> str:
+    return os.path.join(cache_dir, "art", ".sizes")
+
+
+def _read_art_sizes_marker(cache_dir: str) -> dict:
+    """What the cache was built at, or the defaults where nothing says."""
+    sizes = dict(DEFAULT_ART_SIZES)
+    try:
+        with open(_art_sizes_marker(cache_dir), "r", encoding="utf-8") as f:
+            marker = json.load(f)
+        for key in sizes:
+            if isinstance(marker.get(key), int) and marker[key] > 0:
+                sizes[key] = marker[key]
+    except Exception:
+        pass
+    return sizes
+
+
+def load_art_sizes(cache_dir: str) -> dict:
+    """The sizes the cache at `cache_dir` was built at, from its marker,
+    taken as this process's ART_SIZES so every URL it names agrees with
+    the files on disk. A tiny file read, nothing more."""
+    ART_SIZES.update(_read_art_sizes_marker(cache_dir))
+    return dict(ART_SIZES)
+
+
+def apply_art_sizes(cache_dir: str, cover, thumb) -> dict:
+    """Set the sizes a sync builds at, and record them in the marker. A
+    thumbnail size that differs from the marker's wipes <cache>/thumb/:
+    the files keep their names whatever the size, so nothing else would
+    tell a stale one from a right one, and they are rebuilt from the
+    covers without a fetch. A cover size that differs needs nothing: the
+    new size is a new URL, hence a new name, and the old files go with
+    the next prune as unreferenced."""
+    wanted = {}
+    for key, value in (("cover", cover), ("thumb", thumb)):
+        low, high = ART_SIZE_LIMITS[key]
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = ART_SIZES[key]
+        wanted[key] = max(low, min(high, value))
+    previous = _read_art_sizes_marker(cache_dir)
+    if wanted["thumb"] != previous["thumb"]:
+        thumb_dir = os.path.join(cache_dir, "thumb")
+        try:
+            for entry in os.listdir(thumb_dir):
+                try:
+                    os.remove(os.path.join(thumb_dir, entry))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    marker = _art_sizes_marker(cache_dir)
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        tmp = marker + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(wanted, f)
+        os.replace(tmp, marker)
+    except OSError:
+        pass
+    ART_SIZES.update(wanted)
+    return dict(ART_SIZES)
 
 
 def thumb_cache_path(url: str, cache_dir: str) -> str:
@@ -167,18 +256,21 @@ def thumb_cache_path(url: str, cache_dir: str) -> str:
     return os.path.join(cache_dir, "thumb", artwork_filename(url))
 
 
-def make_thumbnail(src_path: str, dest_path: str, size: int = THUMB_SIZE) -> bool:
+def make_thumbnail(src_path: str, dest_path: str, size: int | None = None) -> bool:
     """Scale the cover at `src_path` down to `dest_path`, atomically. False
     without GdkPixbuf, or when the source is not an image."""
+    GdkPixbuf = pixbuf()
     if GdkPixbuf is None:
         return False
+    import tempfile
+    size = size or ART_SIZES["thumb"]
     temp_path = None
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(src_path, size, size, True)
+        pixbuf_ = GdkPixbuf.Pixbuf.new_from_file_at_scale(src_path, size, size, True)
         with tempfile.NamedTemporaryFile(dir=os.path.dirname(dest_path), delete=False, suffix=".tmp") as f:
             temp_path = f.name
-        pixbuf.savev(temp_path, "jpeg", ["quality"], ["90"])
+        pixbuf_.savev(temp_path, "jpeg", ["quality"], ["90"])
         os.replace(temp_path, dest_path)
         temp_path = None
         return True
@@ -194,7 +286,7 @@ def make_thumbnail(src_path: str, dest_path: str, size: int = THUMB_SIZE) -> boo
 
 def cache_thumbnail(url: str, cache_dir: str, dest_path: str) -> str | None:
     """The thumbnail at `dest_path`: scaled from the cached full-size cover
-    when that is on disk, fetched at THUMB_SIZE from `url` otherwise."""
+    when that is on disk, fetched at the thumbnail size from `url` otherwise."""
     if not url or not dest_path:
         return None
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
@@ -235,6 +327,9 @@ def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0, dest_path: 
     except OSError:
         return None
 
+    import tempfile
+    import urllib.request
+
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "MusicMenu/1.0"}
@@ -270,7 +365,7 @@ def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0, dest_path: 
 
 
 # Every artwork path handed out by _extract_artwork, and the URL it came from:
-# the 512x512 one for a cover, the THUMB_SIZE one for its thumbnail.
+# the cover-sized one for a cover, the thumbnail-sized one for its thumbnail.
 # Normalisation only names the file; nothing is fetched until download_art()
 # runs over a finished library (or download_item_art() over a single
 # on-demand item), so a sync's hundreds of downloads happen together, in
@@ -308,6 +403,7 @@ def download_art(library_data_or_urls, cache_dir: str, workers: int = 8, log=Non
     counts = {"wanted": len(urls), "fetched": 0, "failed": 0}
     if not todo:
         return counts
+    import concurrent.futures
     os.makedirs(os.path.join(cache_dir, "art"), exist_ok=True)
     os.makedirs(os.path.join(cache_dir, "thumb"), exist_ok=True)
     # The covers first, the thumbnails after: a thumbnail is scaled from its
@@ -387,6 +483,9 @@ def prune_art(library_data: dict, cache_dir: str) -> int:
             continue
         try:
             for entry in os.listdir(art_dir):
+                # The sizes marker lives here too, and is nobody's artwork.
+                if entry.startswith("."):
+                    continue
                 file_path = os.path.join(art_dir, entry)
                 abs_path = os.path.abspath(file_path)
                 if abs_path not in norm_refs and entry not in norm_refs:
@@ -494,11 +593,12 @@ def _extract_artwork(attrs: dict, raw_item: dict, cache_dir: str | None) -> tupl
 def _register_artwork(url_template: str, cache_dir: str) -> tuple[str, str]:
     """Name the cover and thumbnail files for an artwork URL template and
     record what each is fetched from."""
-    full = template_artwork_url(url_template, 512, 512)
+    cover, small = ART_SIZES["cover"], ART_SIZES["thumb"]
+    full = template_artwork_url(url_template, cover, cover)
     art = artwork_cache_path(full, cache_dir)
     thumb = thumb_cache_path(full, cache_dir)
     ART_URLS[art] = full
-    ART_URLS[thumb] = template_artwork_url(url_template, THUMB_SIZE, THUMB_SIZE)
+    ART_URLS[thumb] = template_artwork_url(url_template, small, small)
     return art, thumb
 
 
@@ -1188,13 +1288,14 @@ def category_page(raw: dict | None, cache_dir: str) -> dict:
 
 def _settle_search_art(item: dict, raw_item: dict) -> None:
     """A search hit's artwork as it stands: the sync's files where they
-    exist, a THUMB_SIZE catalog URL for the cover otherwise, and no thumb
+    exist, a thumbnail-sized catalog URL for the cover otherwise, and no thumb
     at all rather than the name of one that was never fetched."""
     if not (item.get("thumb") and os.path.exists(item["thumb"])):
         item["thumb"] = None
     if not (item.get("art") and os.path.exists(item["art"])):
         url = ((raw_item.get("attributes") or {}).get("artwork") or {}).get("url")
-        item["art"] = template_artwork_url(url, THUMB_SIZE, THUMB_SIZE) if url else None
+        small = ART_SIZES["thumb"]
+        item["art"] = template_artwork_url(url, small, small) if url else None
 
 
 def recommendation_shelves(raw_recs: list, cache_dir: str | None = None) -> list[dict]:
@@ -1296,6 +1397,7 @@ def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None
     for art_name, art_albums in sorted(artists_map.items(), key=lambda x: x[0].lower()):
         art_id = f"l.art_{hashlib.md5(art_name.encode('utf-8')).hexdigest()[:12]}"
         first_art = art_albums[0]["art"] if art_albums and art_albums[0].get("art") else None
+        first_thumb = art_albums[0].get("thumb") if art_albums and art_albums[0].get("art") else None
         first_color = art_albums[0].get("artColor") if art_albums else None
 
         art_obj = {
@@ -1307,8 +1409,12 @@ def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None
             },
         }
         artist_norm = normalize_artist(art_obj, cache_dir=cache_dir, albums=art_albums)
+        # A library artist carries no artwork of its own: it takes its first
+        # album's — the thumbnail with the cover, or the tile would decode
+        # the full cover for want of one.
         if not artist_norm["art"]:
             artist_norm["art"] = first_art
+            artist_norm["thumb"] = first_thumb
             artist_norm["artColor"] = first_color
         artists_list.append(artist_norm)
 
@@ -1317,6 +1423,7 @@ def group_songs_into_albums_and_artists(songs: list[dict], cache_dir: str | None
 
 def save_library(library_data: dict, cache_dir: str, only: str | None = None) -> None:
     """Atomically save library.json under flock, merging sections if only is specified."""
+    import fcntl
     os.makedirs(cache_dir, exist_ok=True)
     lock_path = os.path.join(cache_dir, "library.lock")
     lib_path = os.path.join(cache_dir, "library.json")
@@ -1344,3 +1451,90 @@ def save_library(library_data: dict, cache_dir: str, only: str | None = None) ->
             os.replace(tmp_path, lib_path)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# The other caches: what the shell fetches on its own, and answers kept
+# ---------------------------------------------------------------------------
+
+
+def prune_remote_art(cache_dir: str, max_bytes: int = 32 * 1024 * 1024) -> int:
+    """Trim <cache_dir>/remote-art/ — the covers the shell fetches itself
+    (a search hit's, the player's, a category's picture) — to `max_bytes`,
+    keeping the newest by mtime. Nothing else ever removes them. Returns
+    how many went."""
+    folder = os.path.join(cache_dir, "remote-art")
+    try:
+        entries = []
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if os.path.isfile(path):
+                entries.append((st.st_mtime, st.st_size, path))
+    except OSError:
+        return 0
+    entries.sort(reverse=True)
+    kept = 0
+    pruned = 0
+    for _mtime, size, path in entries:
+        if kept + size <= max_bytes:
+            kept += size
+            continue
+        try:
+            os.remove(path)
+            pruned += 1
+        except OSError:
+            pass
+    return pruned
+
+
+def _safe_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(value or ""))
+
+
+def item_cache_path(cache_dir: str, kind: str, item_id: str) -> str:
+    """Where `am.py item` keeps the full item it answered with, for the
+    shell to read back without a process: <cache>/items/<kind>-<id>.json."""
+    return os.path.join(cache_dir, "items", f"{_safe_id(kind)}-{_safe_id(item_id)}.json")
+
+
+def landing_cache_path(cache_dir: str) -> str:
+    return os.path.join(cache_dir, "landing.json")
+
+
+def category_cache_path(cache_dir: str, category_id: str) -> str:
+    return os.path.join(cache_dir, "categories", f"{_safe_id(category_id)}.json")
+
+
+def write_answer(path: str, answer: dict) -> dict:
+    """Keep `answer` at `path`, atomically, stamped `cached` with when.
+    Best effort: a cache that cannot be written is only a cache."""
+    answer = dict(answer)
+    answer["cached"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(answer, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return answer
+
+
+def read_answer(path: str, max_age_seconds: float) -> dict | None:
+    """The answer kept at `path`, or None when there is none, it cannot be
+    read, or it was stamped longer than `max_age_seconds` ago."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            answer = json.load(f)
+        stamp = answer.get("cached") if isinstance(answer, dict) else None
+        when = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    if (datetime.now(timezone.utc) - when).total_seconds() > max_age_seconds:
+        return None
+    return answer

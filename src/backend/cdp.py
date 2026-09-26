@@ -11,19 +11,23 @@ import hashlib
 import json
 import os
 import socket
-import ssl
 import struct
 import threading
 import time
 from typing import Any
-import urllib.error
 import urllib.parse
-import urllib.request
+
+# No urllib.request, no http.client and no ssl at load: this module is on
+# the path of every am.py command, and those three are a third of a short
+# command's run. Chrome's /json is one plain GET on a loopback socket, done
+# by hand below; ssl is imported only for a wss:// target, which Chrome on
+# 127.0.0.1 never is.
 
 __all__ = [
     "CDPError",
     "CDPTimeoutError",
     "CDPClient",
+    "http_get_json",
     "discover_target",
     "connect_to_chrome",
 ]
@@ -55,6 +59,103 @@ def _mask(payload: bytes, mask_key: bytes) -> bytes:
     return bytes(masked)
 
 
+def http_get_json(port: int, path: str, host: str = "127.0.0.1", timeout: float = 5.0) -> Any:
+    """GET http://{host}:{port}{path} and parse the body as JSON — Chrome's
+    own target list, on a loopback socket, without urllib. Raises
+    CDPTimeoutError on a timeout, CDPError (its `code` the HTTP status)
+    on a refused connection, a status other than 200 or a body that is
+    not JSON."""
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "User-Agent: MusicMenu/1.0\r\n"
+        "Accept: application/json\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    deadline = time.monotonic() + timeout
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.sendall(request)
+            raw = bytearray()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout()
+                sock.settimeout(remaining)
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                raw.extend(chunk)
+                # Done as soon as the body the headers promise is in, so a
+                # server that keeps the connection open does not hold this
+                # until it times out.
+                head_end = raw.find(b"\r\n\r\n")
+                if head_end < 0:
+                    continue
+                head = bytes(raw[:head_end]).decode("iso-8859-1")
+                length = None
+                for line in head.split("\r\n")[1:]:
+                    if line.lower().startswith("content-length:"):
+                        try:
+                            length = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            length = None
+                if length is not None and len(raw) - head_end - 4 >= length:
+                    break
+    except (socket.timeout, TimeoutError) as e:
+        raise CDPTimeoutError(f"Timed out talking to {host}:{port}") from e
+    except OSError as e:
+        raise CDPError(f"Could not connect to {host}:{port}: {e}") from e
+
+    head_end = raw.find(b"\r\n\r\n")
+    if head_end < 0:
+        raise CDPError(f"No HTTP response from {host}:{port}")
+    head = bytes(raw[:head_end]).decode("iso-8859-1")
+    body = bytes(raw[head_end + 4:])
+    lines = head.split("\r\n")
+    parts = lines[0].split()
+    try:
+        status = int(parts[1])
+    except (IndexError, ValueError) as e:
+        raise CDPError(f"Bad HTTP status line from {host}:{port}: {lines[0]!r}") from e
+    headers = {}
+    for line in lines[1:]:
+        if ":" in line:
+            name, value = line.split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        body = _dechunk(body)
+    else:
+        length = headers.get("content-length")
+        if length is not None and length.isdigit():
+            body = body[:int(length)]
+    if status != 200:
+        raise CDPError(f"HTTP {status} from {host}:{port}{path}", code=status)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except Exception as e:
+        raise CDPError(f"Invalid JSON from {host}:{port}{path}: {e}") from e
+
+
+def _dechunk(body: bytes) -> bytes:
+    """A chunked transfer body, joined."""
+    out = bytearray()
+    while True:
+        line_end = body.find(b"\r\n")
+        if line_end < 0:
+            break
+        try:
+            size = int(body[:line_end].split(b";", 1)[0].strip(), 16)
+        except ValueError:
+            break
+        if size == 0:
+            break
+        out.extend(body[line_end + 2:line_end + 2 + size])
+        body = body[line_end + 2 + size + 2:]
+    return bytes(out)
+
+
 def discover_target(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> str:
     """Discover an active page target on the Chrome debugging port.
 
@@ -67,40 +168,18 @@ def discover_target(port: int, host: str = "127.0.0.1", timeout: float = 5.0) ->
 
     Raises CDPTimeoutError on timeout, or CDPError on connection/discovery failure.
     """
-    url = f"http://{host}:{port}/json"
-    req = urllib.request.Request(url, headers={"User-Agent": "MusicMenu/1.0"})
-
-    data: bytes | None = None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except (socket.timeout, TimeoutError) as e:
+        try:
+            targets = http_get_json(port, "/json", host=host, timeout=timeout)
+        except CDPError as e:
+            # Some Chromium builds serve targets at /json/list instead of /json.
+            if e.code != 404 or isinstance(e, CDPTimeoutError):
+                raise
+            targets = http_get_json(port, "/json/list", host=host, timeout=timeout)
+    except CDPTimeoutError as e:
         raise CDPTimeoutError(f"Target discovery timed out connecting to {host}:{port}") from e
-    except urllib.error.HTTPError as e:
-        # Some Chromium builds serve targets at /json/list instead of /json.
-        status = e.code
-        e.close()
-        if status == 404:
-            try:
-                alt_req = urllib.request.Request(
-                    f"http://{host}:{port}/json/list",
-                    headers={"User-Agent": "MusicMenu/1.0"},
-                )
-                with urllib.request.urlopen(alt_req, timeout=timeout) as resp:
-                    data = resp.read()
-            except (socket.timeout, TimeoutError) as e2:
-                raise CDPTimeoutError(f"Target discovery timed out connecting to {host}:{port}") from e2
-            except Exception as e2:
-                raise CDPError(f"Failed to discover target on {host}:{port}: {e2}") from e2
-        else:
-            raise CDPError(f"Failed to discover target on {host}:{port}: {e}") from e
-    except Exception as e:
+    except CDPError as e:
         raise CDPError(f"Failed to discover target on {host}:{port}: {e}") from e
-
-    try:
-        targets = json.loads(data.decode("utf-8"))
-    except Exception as e:
-        raise CDPError(f"Invalid JSON returned from Chrome target discovery: {e}") from e
 
     if not isinstance(targets, list):
         raise CDPError(f"Expected a list of targets from {host}:{port}, got {type(targets).__name__}")
@@ -152,6 +231,7 @@ class CDPClient:
         try:
             raw_sock = socket.create_connection((self.host, self.port), timeout=timeout)
             if parsed.scheme == "wss":
+                import ssl
                 ssl_context = ssl.create_default_context()
                 self._sock: socket.socket | None = ssl_context.wrap_socket(
                     raw_sock, server_hostname=self.host

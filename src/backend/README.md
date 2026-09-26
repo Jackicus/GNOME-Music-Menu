@@ -62,8 +62,8 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `engine start [--visible\|--headless]`, `engine stop`, `engine status` | `{running, pid, port, headless}` |
 | `signin` | Restarts the engine visible at music.apple.com and calls `mk.authorize()`. `{authorized}` |
 | `status` | `{engine, authorized, storefront, bitrate}` |
-| `sync [--only albums\|artists\|playlists\|radio\|shelves]` | Writes library.json (merged per section, under `flock`) and fetches missing artwork in threads. `{counts, generated}` |
-| `item <kind> <id>` | One full item with its `groups`, for a shelf or search result picked on demand; fetches its artwork too |
+| `sync [--only albums\|artists\|playlists\|radio\|shelves]` | Fetches the missing artwork in threads at the `cover-size`/`thumb-size` settings, then writes library.json once (merged per section, under `flock`), then prunes: the artwork nothing names, and `remote-art/` to a budget. `{counts, generated}` |
+| `item <kind> <id>` | One full item with its `groups`, for a shelf or search result picked on demand; fetches its artwork too, and keeps the answer at `<cache>/items/<kind>-<id>.json` for the shell to read back without a process |
 | `play <kind> <id> [--start-with N] [--shuffle]` | `{ok: true}`. kind ∈ `album playlist station song musicVideo artist` |
 | `play-next <kind> <id>`, `play-later <kind> <id>` | `{ok: true}` |
 | `control play\|pause\|toggle\|next\|previous\|stop`, `seek <sec>` | `{ok: true}` |
@@ -74,10 +74,10 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `love\|unlove <kind> <id>`, `add-to-library <kind> <id>` | `{ok: true}` |
 | `playlists`, `add-to-playlist <playlistId> <songId>` | `{items: [{id, title}]}`, `{ok: true}` |
 | `lyrics <catalogSongId>` | `{synced, lines: [{startMs, endMs, text}]}`, cached under `<cache>/lyrics/` |
-| `search <term> [--library] [--limit N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (`meta.results.order`: Top Results, then Artists, Songs, Albums, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A music video is an Item of kind `video`, played as MusicKit's `musicVideo`. A hit's `art` is its cached cover or, unfetched, a 256px catalog URL; its `thumb` is null unless on disk |
+| `search <term> [--library] [--limit N] [--suggest N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (`meta.results.order`: Top Results, then Artists, Songs, Albums, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A music video is an Item of kind `video`, played as MusicKit's `musicVideo`. A hit's `art` is its cached cover or, unfetched, a thumbnail-sized catalog URL; its `thumb` is null unless on disk. `--suggest N` adds `terms`, the first N of what `suggest` would answer, asked in the same round trip — one process for the shell's search rather than two |
 | `suggest <term> [--limit N]` | `{terms: [{term, display}], items: [Item without groups]}` — Apple's own autocomplete for a term half typed (`search/suggestions`): the few searches it would complete it to, and its best few hits for it as it stands, art as `search` has it |
-| `landing` | `{categories: [{id, kind: "category", title, subtitle, art, artColor, url}]}` — the "Browse Categories" of Apple Music's own search page before anything is typed (the `search-landing` recommendation set): Apple's curators, Rock to Wellbeing, in Apple's order; `art` a 320px catalog URL the shell fetches itself, `artColor` the tile's colour |
-| `category <id>` | `{id, title, shelves: [{key, title, items: [Item without groups]}]}` — a category's page: the curator's grouping as shelves (Best New Songs, New Releases, Playlists, Stations…), items as `search` has them |
+| `landing` | `{categories: [{id, kind: "category", title, subtitle, art, artColor, url}]}` — the "Browse Categories" of Apple Music's own search page before anything is typed (the `search-landing` recommendation set): Apple's curators, Rock to Wellbeing, in Apple's order; `art` a 320px catalog URL the shell fetches itself, `artColor` the tile's colour. Kept at `<cache>/landing.json` and answered from there for a day without touching the engine |
+| `category <id>` | `{id, title, shelves: [{key, title, items: [Item without groups]}]}` — a category's page: the curator's grouping as shelves (Best New Songs, New Releases, Playlists, Stations…), items as `search` has them. Kept at `<cache>/categories/<id>.json` for a day, as `landing` is |
 
 ## `library.json`
 
@@ -114,12 +114,33 @@ Track = {"id": "i.xyz", "catalogId": "…" /* or null */, "title": "…", "artis
          "thumb": "<cache>/thumb/<sha1>.jpg" /* or null */}  // a playlist's rows only
 ```
 
-Artwork is fetched at 512×512 into `<cache>/art/`, and each cover has a
-256×256 thumbnail under the same name in `<cache>/thumb/` — scaled from
-the cover when it is already on disk (GdkPixbuf), fetched otherwise. The
-tiles and track rows draw the thumbnail; the detail pane's hero draws the
-cover. A path that is not on disk counts as no artwork. A track row plays
-`group.play` with `--start-with entry.index`.
+Artwork is fetched at the `cover-size` setting (512×512 by default) into
+`<cache>/art/`, and each cover has a `thumb-size` (256×256) thumbnail under
+the same name in `<cache>/thumb/` — scaled from the cover when it is
+already on disk (GdkPixbuf), fetched otherwise. The tiles and track rows
+draw the thumbnail; the detail pane's hero draws the cover. The shell
+decodes a cover whole, on the compositor thread, the first time a tile is
+painted, so the thumbnail size is what a page of tiles costs to show.
+`<cache>/art/.sizes` records what the cache was built at: a sync reads the
+settings and writes it (a changed thumbnail size wipes `thumb/`, the files
+keeping their names whatever the size; a changed cover size is a new URL
+and so new names, the old pruned), and every other command reads it so the
+URLs it names agree with the files. A path that is not on disk counts as
+no artwork. A sync fetches the artwork *before* writing library.json, so a
+listing never lands ahead of its covers. A track row plays `group.play`
+with `--start-with entry.index`.
+
+Beside these, `<cache>/remote-art/` holds what the shell fetches for itself
+(a search hit's cover, the player's, a category's picture; `lib/playerUtil.js`),
+trimmed to 32 MB by mtime at the end of each sync; `<cache>/items/`,
+`<cache>/landing.json` and `<cache>/categories/` hold the answers above,
+each stamped `cached`; `<cache>/lyrics/` the lyrics fetched.
+
+Every `am.py` command is a process of its own, so what is imported at load
+is paid on every one: PyGObject, urllib and the thread pool are imported
+only when artwork is fetched, and the process modules only when Chrome is
+started or stopped — `am.py engine status` is about sixty milliseconds
+end to end.
 
 ## Keeping tests and dev runs off the real profile
 
