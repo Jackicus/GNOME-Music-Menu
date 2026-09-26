@@ -1,9 +1,9 @@
 // Reads ~/.cache/music-menu/library.json (written by backend/am.py sync) and
 // resolves it into what the views render. The Item and shelf shapes are
 // am.py's own — see backend/README.md — and are used as they come off disk;
-// the one thing this module does is check each item's `art` against what is
-// actually in the cache, so a cleared cache reads as no artwork rather than a
-// broken background image.
+// the one thing this module does is check each item's `art` and `thumb`
+// (and a playlist row's `thumb`) against what is actually in the cache, so a
+// cleared cache reads as no artwork rather than a broken background image.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -134,38 +134,52 @@ export function loadLibrary() {
 // ---------------------------------------------------------------------------
 // Is the artwork still there?
 //
-// Every `art` path is am.py's own, under <cache>/art/, already scaled to
-// what the desktop draws (512x512). A path in library.json can outlive the
-// file it names — a cleared cache — and St paints a missing background image
-// as nothing at all, so the drawn placeholder would never get its turn.
-// Checking costs a blocking stat per item though, and this runs on the
-// compositor's main loop for every item in every section and shelf, so the
-// art folder is listed once and the check becomes a lookup rather than a
-// stat each. A path outside the cache counts as missing rather than earning
-// a stat of its own.
+// Every `art` path is am.py's own, under <cache>/art/ (512x512, the hero),
+// and every `thumb` under <cache>/thumb/ (256x256, the tiles and rows). A
+// path in library.json can outlive the file it names — a cleared cache —
+// and St paints a missing background image as nothing at all, so the drawn
+// placeholder would never get its turn. Checking costs a blocking stat per
+// item though, and this runs on the compositor's main loop for every item
+// in every section and shelf, so each folder is listed once and the check
+// becomes a lookup rather than a stat each. A path outside the cache counts
+// as missing rather than earning a stat of its own.
 // ---------------------------------------------------------------------------
 function artworkIndex() {
-    const dir = GLib.build_filenamev([cacheDir(), 'art']);
-    const names = new Set();
-    let children;
-    try {
-        children = Gio.File.new_for_path(dir).enumerate_children(
-            'standard::name', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-    } catch (e) {
-        return {dir, names};   // the folder is not there yet: nothing is cached
+    const index = new Map();
+    for (const folder of ['art', 'thumb']) {
+        const dir = GLib.build_filenamev([cacheDir(), folder]);
+        const names = new Set();
+        index.set(dir, names);
+        let children;
+        try {
+            children = Gio.File.new_for_path(dir).enumerate_children(
+                'standard::name', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+        } catch (e) {
+            continue;   // the folder is not there yet: nothing is cached
+        }
+        let info;
+        while ((info = children.next_file(null)) !== null)
+            names.add(info.get_name());
+        children.close(null);
     }
-    let info;
-    while ((info = children.next_file(null)) !== null)
-        names.add(info.get_name());
-    children.close(null);
-    return {dir, names};
+    return index;
 }
 
-function exists(path, art) {
+function exists(path, index) {
     if (!path)
         return false;
     const cut = path.lastIndexOf('/');
-    return path.slice(0, cut) === art.dir && art.names.has(path.slice(cut + 1));
+    return index.get(path.slice(0, cut))?.has(path.slice(cut + 1)) ?? false;
+}
+
+// A playlist's rows carry a thumbnail each; an album's carry none, and are
+// left as they are rather than copied.
+function checkedEntries(entries, index) {
+    if (!Array.isArray(entries) || !entries.some(entry => entry?.thumb))
+        return entries;
+    return entries.map(entry => entry?.thumb
+        ? {...entry, thumb: exists(entry.thumb, index) ? entry.thumb : null}
+        : entry);
 }
 
 function normalize(item, art) {
@@ -180,12 +194,15 @@ function normalize(item, art) {
         genre: item.genre ?? null,
         summary: item.summary ?? null,
         art: exists(item.art, art) ? item.art : null,
+        thumb: exists(item.thumb, art) ? item.thumb : null,
         artColor: item.artColor ?? null,
         countLabel: item.countLabel ?? null,
         explicit: !!item.explicit,
         catalogId: item.catalogId ?? null,
         url: item.url ?? null,
         play: item.play ?? null,
-        groups: Array.isArray(item.groups) ? item.groups : [],
+        groups: Array.isArray(item.groups)
+            ? item.groups.map(group => ({...group, entries: checkedEntries(group?.entries, art)}))
+            : [],
     };
 }

@@ -131,6 +131,12 @@ export class LibraryView {
         if (!this._key)
             return;
         this.header.setActive(this._key);
+        // The footer's height comes off every page's budget, so it is
+        // measured before the first page is built rather than after: on the
+        // stage, where it has a theme to answer with, which every place the
+        // library opens in puts it on before showing it.
+        if (!this._pages.size)
+            this._measureFooter();
         const page = this._page(this._key);
         for (const other of this._pages.values())
             other.actor.visible = other === page;
@@ -169,11 +175,11 @@ export class LibraryView {
         this._scheduleFooterRecheck();
     }
 
-    // Both callers build this view, set the footer, and only then put the
+    // Every caller builds this view, sets the footer, and only then puts the
     // view on the stage, and a footer measured off the stage has no theme to
-    // answer with. So it is measured on the next idle, by which time the view
-    // is on the stage; the first pages, built against no footer, are built
-    // again against the real height.
+    // answer with. `show` measures it once the view is there, before its
+    // first page; this idle is the backstop for a footer set later, when the
+    // pages already built are built again against the real height.
     _scheduleFooterRecheck() {
         if (this._footerRecheckId)
             return;
@@ -189,12 +195,13 @@ export class LibraryView {
             return;
         ensureStyleDeep(this.actor);
         const height = this._footer ? Math.max(0, this._footer.get_preferred_height(-1)[1]) : 0;
-        // Nothing to redo if the number didn't move and pages already exist
-        // against it — the common case once the recheck lands on a stable,
-        // already-styled tree.
-        if (height === this._footerHeight && this._pages.size)
+        if (height === this._footerHeight)
             return;
         this._footerHeight = height;
+        // Pages built against the old height are built again; none yet is
+        // the usual case, `show` having asked before its first.
+        if (!this._pages.size)
+            return;
         for (const page of this._pages.values())
             page.actor.destroy();
         this._pages.clear();

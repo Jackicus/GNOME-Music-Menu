@@ -6,6 +6,14 @@
 // All" opens a shelf out from one row to the `rows` a tab has, still paged,
 // and back again.
 //
+// A shelf's row is built when the shelf comes into view, not before: the
+// list runs to a couple of dozen shelves, and every cover's first paint is
+// a rendering of its own, so building them all was most of what opening
+// the library cost. Each shelf keeps its row's room from the start, so the
+// list is as long as it will be and nothing below moves as rows arrive; the
+// first screenful is built outright, and the rest as the list is scrolled,
+// one screen ahead, so the keyboard always has a built row beneath it.
+//
 // Between shelves the arrows are St's: the focus group around the whole
 // library (the overview's, or the surface's) navigates them in the capture
 // phase, before anything here sees a key, and its search crosses from one
@@ -23,6 +31,9 @@ import {createLabel} from './widgets.js';
 // From a page's edge to its first tile's artwork: the `icon-grid` theme's
 // page-padding-left and the `overview-tile`'s own padding. Logical px.
 const PAGE_INSET = 18 + 12;
+// A shelf's header, near enough, for how many shelves fill the first screen
+// before anything is allocated. Logical px.
+const HEADER_ESTIMATE = 44;
 
 class Shelf {
     constructor(shelf, {section, width, shape, rows, callbacks}) {
@@ -62,9 +73,20 @@ class Shelf {
         }
         this.actor.add_child(header);
 
+        // The row's room, kept whether or not the row is built yet.
         this._host = new St.Widget({layout_manager: new Clutter.BinLayout(), x_expand: true});
+        this._host.height = pageHeightFor({...shape, rows: 1});
         this.actor.add_child(this._host);
-        this._build(1);
+    }
+
+    get built() {
+        return !!this.view;
+    }
+
+    // The row, once the shelf is in view.
+    build() {
+        if (!this.view)
+            this._build(this._expanded ? this._rows : 1);
     }
 
     // The row, or the grid: the app grid's view over this shelf's items, `rows`
@@ -81,6 +103,7 @@ class Shelf {
         });
         view.y_expand = false;
         view.height = pageHeightFor(shape);
+        this._host.height = view.height;
         this._host.add_child(view);
         this.view = view;
     }
@@ -94,7 +117,7 @@ class Shelf {
     }
 
     get firstTile() {
-        return this.view.tileFor(this._items[0]?.id);
+        return this.view?.tileFor(this._items[0]?.id) ?? null;
     }
 }
 
@@ -129,6 +152,20 @@ export class ShelfView {
         for (const shelf of this._shelves)
             this._list.add_child(shelf.actor);
 
+        // The first screenful, before anything is allocated: as many shelves
+        // as the height holds, and one more for the keyboard to step onto.
+        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        const shelfHeight = pageHeightFor({...shape, rows: 1}) + HEADER_ESTIMATE * scale;
+        const first = height > 0 ? Math.ceil(height / shelfHeight) + 1 : this._shelves.length;
+        for (const shelf of this._shelves.slice(0, first))
+            shelf.build();
+
+        // The rest as they come into view: on each scroll, and on each
+        // layout, since a row opened out with "See All" moves the ones below.
+        const adjustment = this._scroll.vadjustment;
+        adjustment.connectObject('notify::value', () => this._buildInView(), this);
+        this._list.connectObject('notify::allocation', () => this._buildInView(), this);
+
         // The keyboard drags the list after it: a tile focused below the fold
         // — from the shelf above, or on Tab — would otherwise stay there.
         this._focusId = global.stage.connect('notify::key-focus', () => {
@@ -142,31 +179,48 @@ export class ShelfView {
         return this._scroll;
     }
 
+    // Every shelf within a screen of the one on view is built.
+    _buildInView() {
+        if (!this._list.has_allocation())
+            return;
+        const adjustment = this._scroll.vadjustment;
+        const page = adjustment.page_size || this._scroll.height;
+        const top = adjustment.value - page;
+        const bottom = adjustment.value + 2 * page;
+        for (const shelf of this._shelves) {
+            if (shelf.built)
+                continue;
+            const {y1, y2} = shelf.actor.allocation;
+            if (y2 > top && y1 < bottom)
+                shelf.build();
+        }
+    }
+
     // Where a navigation key lands when nothing inside is focused yet — the
     // host's step down from the tabs, as a grid's own focusFirst() is.
     focusFirst() {
-        return this._shelves[0]?.view.focusFirst() ?? false;
+        return this._shelves[0]?.view?.focusFirst() ?? false;
     }
 
     // Whether `actor` is on the first shelf's first row: an arrow up from
     // there is the tabs' (libraryView.js).
     atTopRow(actor) {
         const first = this._shelves[0];
-        return !!first && first.actor.contains(actor) && first.view.atTopRow(actor);
+        return !!first?.view && first.actor.contains(actor) && first.view.atTopRow(actor);
     }
 
     // A page on or back, on whichever shelf holds the keyboard, or the first.
     pageBy(delta) {
         const focus = global.stage.get_key_focus();
         const shelf = this._shelves.find(s => s.actor.contains(focus)) ?? this._shelves[0];
-        return shelf?.view.pageBy(delta) ?? false;
+        return shelf?.view?.pageBy(delta) ?? false;
     }
 
     // The tile showing `itemId` on whichever shelf has built it: where the
     // detail pane's artwork flies back to.
     tileFor(itemId) {
         for (const shelf of this._shelves) {
-            const tile = shelf.view.tileFor(itemId);
+            const tile = shelf.view?.tileFor(itemId);
             if (tile)
                 return tile;
         }

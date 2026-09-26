@@ -877,8 +877,10 @@ export class MusicMenuApp {
                     item[field] = full[field];
             }
             // Its artwork was fetched on the way, if the sync had not.
-            if (!item.art && full.art && GLib.file_test(full.art, GLib.FileTest.EXISTS))
-                item.art = full.art;
+            for (const field of ['art', 'thumb']) {
+                if (!item[field] && full[field] && GLib.file_test(full[field], GLib.FileTest.EXISTS))
+                    item[field] = full[field];
+            }
         } catch (e) {
             console.warn(`[Music Menu] Could not load ${item.kind} ${item.id}: ${e.message}`);
         } finally {

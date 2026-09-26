@@ -16,10 +16,12 @@
 
 import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import St from 'gi://St';
 
 import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js';
 import * as IconGrid from 'resource:///org/gnome/shell/ui/iconGrid.js';
+import {adjustAnimationTime} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
 import {staggerIn} from './anim.js';
 import {handleBoundKey} from './controls.js';
@@ -64,8 +66,15 @@ const KIND_ICON = {
     artist: 'avatar-default-symbolic',
     station: 'radio-symbolic',
 };
-// Pages built beyond the one showing, so the next is there to swipe to.
+// Pages built beyond the one showing, so the next is there to swipe to —
+// built this long after the page they follow, not with it. A page is painted
+// whether or not it is on screen, and every cover's first paint is a
+// rendering of its own (St draws a rounded image through cairo), so three
+// pages of covers at once was most of what opening the library cost; the
+// one on show comes first and the rest arrive once the overview, or the
+// page turn, has landed.
 const PAGES_AHEAD = 2;
+const PAGES_AHEAD_DELAY = 400;
 
 // The `grid-align` setting: 'center' places a part-full row as the app grid
 // does, under the middle of the full ones, 'start' lines it up on the leading
@@ -295,10 +304,11 @@ class MusicMenuMediaItem extends AppDisplay.AppViewItem {
         // shelf what the tile is and a tab of nothing but artists nothing;
         // there the album count says something instead.
         const subtitle = section.round ? item.countLabel : item.subtitle;
+        // The thumbnail, which is the tile's size; the hero draws the cover.
         this.icon = new PosterIcon(item.title, subtitle, {
             setSizeManually: true,
             createIcon: size => createArtwork({
-                path: item.art,
+                path: item.thumb ?? item.art,
                 title: item.title,
                 icon,
                 width: Math.round(size / section.aspect),
@@ -400,14 +410,41 @@ class MusicMenuMediaView extends BaseAppView {
         this._perPage = pendingGrid.rows * this._columns;
         this._media = [];
         this._byId = new Map();
+        this._aheadTimer = 0;
+        this.connect('destroy', () => {
+            if (this._aheadTimer)
+                GLib.source_remove(this._aheadTimer);
+            this._aheadTimer = 0;
+        });
         this._fillTo(0);
     }
 
-    // Tiles up to PAGES_AHEAD pages past `page`, appended in order. Straight
-    // into the grid: the view's own _redisplay diffs every item against every
-    // other, which is nothing for the apps and seconds for a big library.
+    // Tiles through `page`, appended in order, and the PAGES_AHEAD past it a
+    // moment later. Straight into the grid: the view's own _redisplay diffs
+    // every item against every other, which is nothing for the apps and
+    // seconds for a big library.
     _fillTo(page) {
-        const want = Math.min(this._data.length, (page + 1 + PAGES_AHEAD) * this._perPage);
+        this._fillThrough(page);
+        this._scheduleAhead(page, 1);
+    }
+
+    // The pages past `page`, one per tick.
+    _scheduleAhead(page, ahead) {
+        if (this._aheadTimer)
+            GLib.source_remove(this._aheadTimer);
+        this._aheadTimer = 0;
+        if (ahead > PAGES_AHEAD || this._media.length >= this._data.length)
+            return;
+        this._aheadTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, adjustAnimationTime(PAGES_AHEAD_DELAY), () => {
+            this._aheadTimer = 0;
+            this._fillThrough(page + ahead);
+            this._scheduleAhead(page, ahead + 1);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _fillThrough(page) {
+        const want = Math.min(this._data.length, (page + 1) * this._perPage);
         while (this._media.length < want) {
             const order = this._media.length;
             const item = new MediaItem({
