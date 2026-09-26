@@ -227,6 +227,11 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         appearance.add(accent);
 
         // --------------------------------------------------------------
+        // Performance group
+        // --------------------------------------------------------------
+        page.add(this._performanceGroup(state, slider));
+
+        // --------------------------------------------------------------
         // Wire up view mode descriptions and visibility
         // --------------------------------------------------------------
         const VIEWS = {
@@ -262,6 +267,124 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         syncView();
 
         return page;
+    }
+
+    // ------------------------------------------------------------------
+    // Performance
+    // ------------------------------------------------------------------
+    // What artwork costs: the sizes the sync stores it at (the shell decodes
+    // a cover on its first paint and keeps it for the session, so smaller is
+    // both quicker and lighter), how far ahead the grid is built, and the
+    // cache itself, with a way to empty it.
+    _performanceGroup(state, slider) {
+        const {settings, window} = state;
+        const group = new Adw.PreferencesGroup({
+            title: 'Performance',
+            description: 'Lighter settings for a slower machine. Artwork sizes take effect at the next sync.',
+        });
+
+        // A row of fixed sizes: the setting is any number in its range, so a
+        // value the list does not hold (one set by hand) lands on the nearest.
+        const sizes = (key, choices) => {
+            const row = new Adw.ComboRow({model: Gtk.StringList.new(choices.map(px => `${px} px`))});
+            const sync = () => {
+                const value = settings.get_int(key);
+                let nearest = 0;
+                for (let i = 1; i < choices.length; i++) {
+                    if (Math.abs(choices[i] - value) < Math.abs(choices[nearest] - value))
+                        nearest = i;
+                }
+                if (row.selected !== nearest)
+                    row.selected = nearest;
+            };
+            row.connect('notify::selected', () => {
+                const value = choices[row.selected];
+                if (value !== undefined && value !== settings.get_int(key))
+                    settings.set_int(key, value);
+            });
+            settings.connect(`changed::${key}`, sync);
+            sync();
+            return row;
+        };
+
+        const thumbs = sizes('thumb-size', [128, 192, 256, 384]);
+        thumbs.title = 'Thumbnail size';
+        thumbs.subtitle = 'The artwork on tiles and track rows. 128 is enough for a normal display, 256 for HiDPI; the next sync rebuilds them from the covers on disk.';
+        group.add(thumbs);
+
+        const covers = sizes('cover-size', [320, 512, 768, 1024]);
+        covers.title = 'Cover size';
+        covers.subtitle = 'The full cover, in the detail pane and Now Playing. Changing it downloads every cover again at the next sync.';
+        group.add(covers);
+
+        const pagesRow = new Adw.ActionRow({
+            title: 'Pages built ahead',
+            subtitle: 'Pages of covers made ready past the one showing, so the next swipe finds them built. Fewer is lighter.',
+        });
+        pagesRow.add_suffix(slider('pages-ahead', 0, 3));
+        group.add(pagesRow);
+
+        // The cache on disk: measured off the main loop, so the window opens
+        // before a thousand covers have been sized up.
+        const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'music-menu']);
+        const ART_DIRS = ['art', 'thumb', 'remote-art'];
+        const CLEARABLE = [...ART_DIRS, 'items', 'categories', 'landing.json'];
+        const diskRow = new Adw.ActionRow({
+            title: 'Artwork on disk',
+            subtitle: 'Measuring…',
+        });
+        const clear = new Gtk.Button({label: 'Clear', valign: Gtk.Align.CENTER});
+        diskRow.add_suffix(clear);
+        diskRow.activatable_widget = clear;
+        group.add(diskRow);
+
+        let measuring = null;
+        const measure = async () => {
+            if (measuring)
+                return measuring;
+            measuring = (async () => {
+                let total = 0;
+                for (const name of ART_DIRS)
+                    total += await folderSize(Gio.File.new_for_path(GLib.build_filenamev([cacheDir, name])));
+                return total;
+            })().finally(() => (measuring = null));
+            return measuring;
+        };
+        const showSize = async (note = '') => {
+            const total = await measure();
+            const size = total > 0 ? GLib.format_size(total) : 'Nothing cached';
+            diskRow.subtitle = note ? `${size}. ${note}` : size;
+            clear.sensitive = total > 0;
+        };
+        // Off the window's own construction: nothing waits on it.
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            showSize();
+            return GLib.SOURCE_REMOVE;
+        });
+
+        clear.connect('clicked', () => {
+            const dialog = new Adw.AlertDialog({
+                heading: 'Clear the Artwork Cache?',
+                body: 'Every cover and thumbnail on disk is removed. Nothing about your library is lost: the next sync fetches the artwork again.',
+            });
+            dialog.add_response('cancel', 'Cancel');
+            dialog.add_response('clear', 'Clear');
+            dialog.set_response_appearance('clear', Adw.ResponseAppearance.DESTRUCTIVE);
+            dialog.set_default_response('cancel');
+            dialog.set_close_response('cancel');
+            dialog.connect('response', async (_dialog, response) => {
+                if (response !== 'clear')
+                    return;
+                clear.sensitive = false;
+                diskRow.subtitle = 'Clearing…';
+                for (const name of CLEARABLE)
+                    await removeTree(Gio.File.new_for_path(GLib.build_filenamev([cacheDir, name])));
+                showSize('The next sync fetches the artwork again.');
+            });
+            dialog.present(window);
+        });
+
+        return group;
     }
 
     // ------------------------------------------------------------------
@@ -446,7 +569,7 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
         });
         page.add(syncGroup);
 
-        const currentSync = settings.get_string('last-sync') || lastSyncFromCache();
+        const currentSync = settings.get_string('last-sync');
         const syncRow = new Adw.ActionRow({
             title: 'Sync library',
             subtitle: formatSyncSubtitle(currentSync),
@@ -832,20 +955,71 @@ function formatSyncSubtitle(lastSyncStr, counts = null) {
     return dateStr || 'The library has not been synced yet';
 }
 
-function lastSyncFromCache() {
-    try {
-        const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'music-menu', 'library.json']);
-        if (GLib.file_test(path, GLib.FileTest.EXISTS)) {
-            const [ok, bytes] = GLib.file_get_contents(path);
-            if (ok) {
-                const data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-                return data?.generated ?? '';
+// The bytes under `folder`, asynchronously; a folder that is not there is
+// nought. Only the flat cache folders are ever measured, so no recursion.
+function folderSize(folder) {
+    return new Promise(resolve => {
+        folder.enumerate_children_async('standard::size,standard::type', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
+            GLib.PRIORITY_DEFAULT, null, (source, res) => {
+                let children;
+                try {
+                    children = source.enumerate_children_finish(res);
+                } catch {
+                    resolve(0);
+                    return;
+                }
+                let total = 0;
+                const next = () => children.next_files_async(200, GLib.PRIORITY_DEFAULT, null, (it, r) => {
+                    let infos;
+                    try {
+                        infos = it.next_files_finish(r);
+                    } catch {
+                        infos = [];
+                    }
+                    for (const info of infos) {
+                        if (info.get_file_type() === Gio.FileType.REGULAR)
+                            total += info.get_size();
+                    }
+                    if (infos.length)
+                        next();
+                    else
+                        it.close_async(GLib.PRIORITY_DEFAULT, null, () => resolve(total));
+                });
+                next();
+            });
+    });
+}
+
+// `file` and whatever is under it, gone, on a turn of the loop of its own
+// so the window stays responsive across the set; a file that is not there
+// is fine. The cache holds nothing but flat folders of images and small
+// JSON, so the walk of one folder is short.
+function removeTree(file) {
+    return new Promise(resolve => {
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            try {
+                removeTreeNow(file);
+            } catch (e) {
+                console.warn(`[Music Menu] Could not clear ${file.get_path()}: ${e.message}`);
             }
-        }
-    } catch {
-        // ignore
+            resolve();
+            return GLib.SOURCE_REMOVE;
+        });
+    });
+}
+
+function removeTreeNow(file) {
+    const type = file.query_file_type(Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+    if (type === Gio.FileType.UNKNOWN)
+        return;
+    if (type === Gio.FileType.DIRECTORY) {
+        const it = file.enumerate_children('standard::name,standard::type', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+        let info;
+        while ((info = it.next_file(null)))
+            removeTreeNow(file.get_child(info.get_name()));
+        it.close(null);
     }
-    return '';
+    file.delete(null);
 }
 
 function shortcutClash(settings, accel, ownKey) {

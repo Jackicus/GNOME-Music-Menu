@@ -237,5 +237,27 @@
             <description>How much of the room available the pop-up detail panel fills, as a percentage. Used when items open in a pop-up (detail-opens-in "menu" or "modal").</description>
         </key>
 
+        <!-- Performance: how much artwork costs, on disk and on first paint.
+             The two sizes are read by the backend at sync time (am.py reads
+             this schema), the pages by the grid as it is built. -->
+        <key name="thumb-size" type="i">
+            <range min="96" max="512"/>
+            <default>256</default>
+            <summary>Thumbnail size</summary>
+            <description>The artwork drawn on tiles and track rows, in pixels. Smaller is quicker to draw and lighter on memory: the shell decodes each cover on its first paint and keeps it for the session. 256 suits a HiDPI display, 128 a normal one. Applied by the next sync, which rebuilds the thumbnails from the covers already on disk.</description>
+        </key>
+        <key name="cover-size" type="i">
+            <range min="256" max="1024"/>
+            <default>512</default>
+            <summary>Cover size</summary>
+            <description>The full cover, in pixels, drawn in the detail pane and in Now Playing. Changing it downloads every cover again at the next sync.</description>
+        </key>
+        <key name="pages-ahead" type="i">
+            <range min="0" max="3"/>
+            <default>2</default>
+            <summary>Pages built ahead</summary>
+            <description>How many pages of covers past the one showing are built before they are turned to, so the next swipe finds them ready. Fewer is lighter on a slow machine.</description>
+        </key>
+
     </schema>
 </schemalist>
