@@ -25,12 +25,9 @@ import Clutter from 'gi://Clutter';
 
 import {ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
 
-import {ARROWS_SHARE, createMediaView, gridShapeFor, pageHeightFor} from './mediaGrid.js';
+import {createMediaView, firstTileInsetFor, gridShapeFor, pageHeightFor} from './mediaGrid.js';
 import {createLabel} from './widgets.js';
 
-// From a page's edge to its first tile's artwork: the `icon-grid` theme's
-// page-padding-left and the `overview-tile`'s own padding. Logical px.
-const PAGE_INSET = 18 + 12;
 // A shelf's header, near enough, for how many shelves fill the first screen
 // before anything is allocated. Logical px.
 const HEADER_ESTIMATE = 44;
@@ -52,10 +49,8 @@ class Shelf {
             x_expand: true,
         });
 
-        // The title starts where the row's first tile does: past the arrows'
-        // share of the width and the page's inset. St scales the style.
-        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        const inset = Math.round(width * ARROWS_SHARE / 2 / scale) + PAGE_INSET;
+        // The title starts where the row's first tile does. St scales the style.
+        const inset = firstTileInsetFor(width, shape, section.aspect);
         const header = new St.BoxLayout({style_class: 'mm-shelf-header', x_expand: true});
         header.style = `margin: 0 ${inset}px;`;
         header.add_child(createLabel(shelf.title ?? '', 'mm-shelf-title', {x_expand: true}));

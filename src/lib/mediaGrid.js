@@ -33,9 +33,12 @@ const BaseAppView = Object.getPrototypeOf(AppDisplay.AppDisplay);
 // Every number below is logical pixels, as the theme writes them, and is
 // multiplied by the scale factor where it meets an allocation.
 //
-// The smallest a cover is allowed to get; it is what caps "columns" and "rows".
-// The app grid's own icons come down to this on a small page, and a cover
-// beside them at the same size reads as one of them.
+// The cover is the app grid's own large icon (iconGrid.js IconSize.LARGE),
+// so a cover beside an app icon is its size and a page of covers is laid
+// out as a page of apps is. The smallest it is allowed to get, on a box
+// with no room for even one at that size, is what the app grid's icons
+// come down to on a small page.
+const ART = 96;
 const MIN_ART = 64;
 // .icon-grid column-spacing/row-spacing (data/theme/…/_app-grid.scss:8-9), the
 // value the theme hands the layout; only gridFor, which runs before the grid
@@ -50,8 +53,9 @@ const TILE_CHROME = 74;
 // there wraps its title downwards like any other, and the page edge would
 // otherwise cut the line off.
 const TITLE_LINE = 20;
-// The `icon-grid` theme's page padding.
-const PAGE_PADDING_V = 48;
+// The `icon-grid` theme's page padding: the sides as the theme has them,
+// the top and bottom halved by `.mm-grid` (stylesheet.css) — keep in step.
+const PAGE_PADDING_V = 24;
 const PAGE_PADDING_H = 36;
 // Beside the grid: a tenth of the width each side, where the page arrows
 // stand (the shell's PAGE_PREVIEW_RATIO). Beneath it: the page dots.
@@ -86,43 +90,53 @@ export function setGridAlign(align) {
     gridAlign = align === 'start' ? 'start' : 'center';
 }
 
-// Rows, columns and the artwork height that fills them, for the box a view is
-// given. Decided once, before any item is added: the layout pages items as
-// they arrive and does not page them again when the mode changes (the shell's
-// own modes all hold twenty-four).
+// Rows, columns and the cover size for the box a view is given. Decided
+// once, before any item is added: the layout pages items as they arrive and
+// does not page them again when the mode changes (the shell's own modes all
+// hold twenty-four).
 //
-// `columns` and `rows` are the two "covers per page" preferences, and they
-// lead: the cover is whatever size that many of them come to in the width and
-// height on offer. Each is capped by how many fit at MIN_ART, which is what
-// makes the smallest box — the overview's grid slot — the bottleneck, in one
-// place, for all three views.
+// The cover is ART, the app grid's icon; `columns` and `rows` are the two
+// "covers per page" preferences, and they are ceilings: as many fit at that
+// size, up to that many. The smallest box — the overview's grid slot — is
+// thereby the bottleneck, in one place, for all three views. Only a box
+// with no room for one cover at ART shrinks it, down to MIN_ART.
 function gridFor(width, height, aspect, wantColumns, wantRows) {
     const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
     const gap = GAP * scale;
     const pad = TILE_PADDING * scale;
     const chrome = TILE_CHROME * scale;
+    const art = ART * scale;
     const minArt = MIN_ART * scale;
 
     const gridW = width * (1 - ARROWS_SHARE) - PAGE_PADDING_H * scale;
     const gridH = height - (DOTS_HEIGHT + PAGE_PADDING_V + TITLE_LINE) * scale;
 
-    // How many columns fit at the smallest cover.
-    const fitColumns = Math.floor((gridW + gap) / (minArt / aspect + pad + gap));
+    // How many fit at the cover's size, each way.
+    const fitColumns = Math.floor((gridW + gap) / (art / aspect + pad + gap));
+    const fitRows = Math.floor((gridH + gap) / (art + chrome + gap));
     const columns = Math.max(1, Math.min(wantColumns, fitColumns));
-    const cellW = Math.floor((gridW - gap * (columns - 1)) / columns);
-    const byWidth = Math.floor((cellW - pad) * aspect);
-
-    // How many rows fit at the smallest cover, the same way.
-    const forRows = n => Math.floor((gridH + gap) / n - chrome - gap);
-    const fitRows = Math.floor((gridH + gap) / (minArt + chrome + gap));
     const rows = Math.max(1, Math.min(wantRows, fitRows));
 
-    // The cover is the largest it can be before either axis is hit: that many
-    // columns across, or that many rows down. The other axis is left with
-    // slack, and the layout centres the block in it.
-    const iconSize = Math.max(minArt, Math.min(byWidth, forRows(rows)));
+    // And what one cover can have when not even one fits.
+    const cellW = Math.floor((gridW - gap * (columns - 1)) / columns);
+    const byWidth = Math.floor((cellW - pad) * aspect);
+    const byHeight = Math.floor((gridH + gap) / rows - chrome - gap);
+    const iconSize = Math.max(minArt, Math.min(art, byWidth, byHeight));
 
     return {rows, columns, iconSize};
+}
+
+// From the left edge of a view of `width` to its first tile's artwork, in
+// logical px: past the arrows' share, the page's padding and the slack the
+// layout leaves either side of a block of `shape`'s columns, then the
+// tile's own padding. A shelf's title starts here (shelfView.js).
+export function firstTileInsetFor(width, shape, aspect = 1.0) {
+    const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+    const pageW = width * (1 - ARROWS_SHARE);
+    const cellW = shape.iconSize / aspect + TILE_PADDING * scale;
+    const blockW = shape.columns * cellW + (shape.columns - 1) * GAP * scale;
+    const slack = Math.max(0, (pageW - PAGE_PADDING_H * scale - blockW) / 2);
+    return Math.round((width * ARROWS_SHARE / 2 + PAGE_PADDING_H / 2 * scale + slack + TILE_PADDING / 2 * scale) / scale);
 }
 
 // The shape a view of `columns` by `rows` takes in a box, for whoever builds
@@ -144,8 +158,15 @@ export function pageHeightFor({rows, iconSize}) {
 // The shell's layout takes the larger of an item's width and height as the
 // side of every cell. This one keeps the two apart, sets the cells the theme's
 // gap apart and centres the block on the page. Paging is untouched.
+// `startAligned` is a shelf's row: its part-full row starts at the block's
+// left edge, under its title, whatever `grid-align` says of a tab's.
 const PosterGridLayout = GObject.registerClass(
 class MusicMenuPosterGridLayout extends IconGrid.IconGridLayout {
+    _init(params) {
+        super._init(params);
+        this.startAligned = false;
+    }
+
     vfunc_allocate() {
         if (!this._pageWidth || !this._pageHeight)
             return;
@@ -179,7 +200,7 @@ class MusicMenuPosterGridLayout extends IconGrid.IconGridLayout {
         // exactly, so the block can be well short of the page width, and a
         // block hugging the leading edge then left all of that as one gap on
         // the trailing side.
-        const centred = gridAlign === 'center';
+        const centred = gridAlign === 'center' && !this.startAligned;
         const left = pad.left + Math.max(0, (this._pageWidth - pad.left - pad.right - blockW) / 2);
         const top = pad.top +
             Math.max(0, (this._pageHeight - pad.top - pad.bottom - TITLE_LINE * scale - blockH) / 2);
@@ -226,13 +247,16 @@ class MusicMenuPosterGridLayout extends IconGrid.IconGridLayout {
 
 const MediaGrid = GObject.registerClass(
 class MusicMenuMediaGrid extends AppDisplay.AppGrid {
-    _init({rows, columns, iconSize}) {
+    _init({rows, columns, iconSize, startAligned = false}) {
         super._init({
             allow_incomplete_pages: true,
             rows_per_page: rows,
             columns_per_page: columns,
         });
         this.setGridModes([{rows, columns}]);
+        // Less page padding above and below than the app grid keeps
+        // (stylesheet.css; PAGE_PADDING_V is the budget for it).
+        this.add_style_class_name('mm-grid');
 
         // The grid makes its own layout and offers no way to choose it. The
         // one it made goes unreferenced here on purpose: IconGrid's destroy
@@ -245,6 +269,7 @@ class MusicMenuMediaGrid extends AppDisplay.AppGrid {
             columns_per_page: columns,
             fixed_icon_size: iconSize,
         });
+        layout.startAligned = startAligned;
         layout.connect('pages-changed', () => this.emit('pages-changed'));
         this.layout_manager = layout;
     }
@@ -569,7 +594,7 @@ class MusicMenuMediaView extends BaseAppView {
 // answer, or one row of it) is taken as it is instead. `inList` is a shelf's
 // row, one of a scrolling list of them.
 export function createMediaView({section, items, width, height, columns, rows, shape = null, inList = false, onActivate, onContextMenu}) {
-    pendingGrid = shape ?? gridFor(width, height, section.aspect, columns, rows);
+    pendingGrid = {...(shape ?? gridFor(width, height, section.aspect, columns, rows)), startAligned: inList};
     const view = new MediaView({section, items, inList, onActivate, onContextMenu});
     // Filling the grid moves it: each batch of tiles makes another page, and
     // the grid follows the one it has just made. Start at the first.

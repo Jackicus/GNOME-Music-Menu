@@ -24,7 +24,7 @@
 
 .mm-header {
     height: 52px;
-    margin-bottom: 24px;
+    margin-bottom: 12px;
 }
 
 .mm-header-titles {
@@ -99,6 +99,15 @@
 }
 
 /* ---- Library grid ------------------------------------------------------ */
+
+/* The app grid's page padding, halved above and below: a page of covers
+ * with a title and an artist under each is taller than a page of apps
+ * already, and Listen Now stacks such pages. mediaGrid.js's PAGE_PADDING_V
+ * is the budget for these — keep in step. */
+.icon-grid.mm-grid {
+    page-padding-top: 12px;
+    page-padding-bottom: 12px;
+}
 
 
 /* No box-shadow on artwork, here or on the hero: St shadows an image-backed

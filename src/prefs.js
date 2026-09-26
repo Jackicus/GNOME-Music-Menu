@@ -169,16 +169,16 @@ export default class MusicMenuPreferences extends ExtensionPreferences {
 
         const rowsRow = new Adw.ActionRow({
             title: 'Rows',
-            subtitle: 'Covers down a page. Fewer means larger covers.',
+            subtitle: 'At most this many rows on a page. Covers are the size of the app grid\'s icons, and a page holds as many as fit.',
         });
-        rowsRow.add_suffix(slider('rows', 1, 3));
+        rowsRow.add_suffix(slider('rows', 1, 6));
         appearance.add(rowsRow);
 
         const columnsRow = new Adw.ActionRow({
             title: 'Columns',
-            subtitle: 'Covers across a page. Fewer means larger covers. A small space — the grid in the overview, a small screen — fits fewer of either.',
+            subtitle: 'At most this many covers across a page. A small space — the grid in the overview, a small screen — fits fewer of either.',
         });
-        columnsRow.add_suffix(slider('columns', 4, 10));
+        columnsRow.add_suffix(slider('columns', 4, 16));
         appearance.add(columnsRow);
 
         const align = new Adw.ToggleGroup({valign: Gtk.Align.CENTER, homogeneous: true, can_shrink: false});

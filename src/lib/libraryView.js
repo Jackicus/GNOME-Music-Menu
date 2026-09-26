@@ -24,10 +24,10 @@ import {createMediaView} from './mediaGrid.js';
 import {ShelfView} from './shelfView.js';
 import {createEmptyState, createHeader, createIconButton} from './widgets.js';
 
-// `.mm-header`'s height (52px) plus its margin-bottom (24px) in stylesheet.css
+// `.mm-header`'s height (52px) plus its margin-bottom (12px) in stylesheet.css
 // — keep in step — taken off the top before anything under it is sized.
 // Logical px.
-export const HEADER_ALLOWANCE = 76;
+export const HEADER_ALLOWANCE = 64;
 
 export class LibraryView {
     // `sections` are the tabs, in order, and `active` the one to show first.
