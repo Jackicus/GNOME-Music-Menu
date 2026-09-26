@@ -1240,11 +1240,21 @@ def format_count_label(track_count, total_ms):
 # ---------------------------------------------------------------------------
 
 def build_demo_library(out_dir):
-    """Generate library.json and 512x512 artwork."""
+    """Generate library.json, 512x512 artwork and the 256x256 thumbnails the
+    tiles draw (backend/sync.py THUMB_SIZE)."""
     rnd = random.Random(42)
 
     art_dir = os.path.join(out_dir, "art")
+    thumb_dir = os.path.join(out_dir, "thumb")
     os.makedirs(art_dir, exist_ok=True)
+    os.makedirs(thumb_dir, exist_ok=True)
+
+    def thumb_for(art_path):
+        """The thumbnail of a cover just drawn, under the same name in thumb/."""
+        thumb_path = os.path.join(thumb_dir, os.path.basename(art_path))
+        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(art_path, 256, 256, True)
+        pixbuf.savev(thumb_path, "jpeg", ["quality"], ["90"])
+        return thumb_path
 
     # If out_dir is not named 'music-menu', link 'music-menu' to '.'
     # so clients looking in either $DIR/library.json or $DIR/music-menu/library.json find it.
@@ -1286,6 +1296,7 @@ def build_demo_library(out_dir):
             motif=motif,
             is_artist=False,
         )
+        thumb_path = thumb_for(art_path)
 
         # Build album tracks and groups
         album_groups = []
@@ -1313,6 +1324,7 @@ def build_demo_library(out_dir):
                     "durationLabel": format_duration(dur_ms),
                     "explicit": is_explicit,
                     "index": overall_index,
+                    "thumb": thumb_path,
                 }
                 global_trk_counter += 1
                 overall_index += 1
@@ -1339,6 +1351,7 @@ def build_demo_library(out_dir):
             "genre": alb_data["genre"],
             "summary": alb_data["summary"],
             "art": art_path,
+            "thumb": thumb_path,
             "artColor": palette[1],
             "countLabel": count_label,
             "explicit": album_explicit,
@@ -1398,6 +1411,7 @@ def build_demo_library(out_dir):
             "genre": art_data["genre"],
             "summary": art_data["bio"],
             "art": art_path,
+            "thumb": thumb_for(art_path),
             "artColor": palette[1],
             "countLabel": count_label,
             "explicit": False,
@@ -1466,6 +1480,7 @@ def build_demo_library(out_dir):
             "genre": pl_data["genre"],
             "summary": pl_data["summary"],
             "art": art_path,
+            "thumb": thumb_for(art_path),
             "artColor": palette[1],
             "countLabel": count_label,
             "explicit": playlist_explicit,
@@ -1512,6 +1527,7 @@ def build_demo_library(out_dir):
             "genre": st_data["genre"],
             "summary": st_data["summary"],
             "art": art_path,
+            "thumb": thumb_for(art_path),
             "artColor": palette[1],
             "countLabel": "Radio Station",
             "explicit": False,

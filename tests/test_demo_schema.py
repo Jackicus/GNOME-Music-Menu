@@ -94,7 +94,7 @@ class TestDemoLibrarySchema(unittest.TestCase):
         self.assertIsInstance(item, dict)
         for field in (
             "id", "kind", "title", "subtitle", "year", "genre",
-            "summary", "art", "artColor", "countLabel", "explicit",
+            "summary", "art", "thumb", "artColor", "countLabel", "explicit",
             "catalogId", "url", "play", "groups"
         ):
             self.assertIn(field, item, f"Item missing field: {field}")
@@ -110,6 +110,10 @@ class TestDemoLibrarySchema(unittest.TestCase):
             self.assertTrue(os.path.isabs(item["art"]), f"Art path not absolute: {item['art']}")
             self.assertTrue(os.path.exists(item["art"]), f"Art file does not exist: {item['art']}")
             self.assertGreater(os.path.getsize(item["art"]), 1000)
+            # And its thumbnail beside it, under the same name.
+            self.assertTrue(os.path.exists(item["thumb"]), f"Thumb file does not exist: {item['thumb']}")
+            self.assertEqual(os.path.basename(item["thumb"]), os.path.basename(item["art"]))
+            self.assertLess(os.path.getsize(item["thumb"]), os.path.getsize(item["art"]))
 
         # artColor is a hex string
         if item["artColor"] is not None:

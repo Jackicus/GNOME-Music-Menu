@@ -6,7 +6,7 @@ one JSON object it prints, and otherwise only reads files this code wrote.
 
 ```
 Extension (src/lib, in the shell) ──spawn──► am.py <command> ──CDP──► Chrome: music.apple.com
-        ▲  reads ~/.cache/music-menu/library.json + art/   (one-shot, JSON on stdout)     │
+        ▲  reads ~/.cache/music-menu/library.json + art/ + thumb/   (one-shot, JSON on stdout)  │
         └──────────────── MPRIS (org.mpris.MediaPlayer2.chrome.*) ◄──────────────────────┘
 ```
 
@@ -94,7 +94,9 @@ Item = {
   "kind": "album" | "playlist" | "artist" | "station",
   "title": "…", "subtitle": "…",                 // artist, curator, or "Apple Music"
   "year": 2007, "genre": "Rock", "summary": "plain text" /* or null */,
-  "art": "<cache>/art/<sha1>.jpg" /* or null */, "artColor": "#1a1a1a" /* or null */,
+  "art": "<cache>/art/<sha1>.jpg" /* or null */,  // 512x512, the hero
+  "thumb": "<cache>/thumb/<sha1>.jpg" /* or null */,  // 256x256, the tiles; same name as its art
+  "artColor": "#1a1a1a" /* or null */,
   "countLabel": "12 songs, 43 min", "explicit": false,
   "catalogId": "…" /* or null */, "url": "https://music.apple.com/…" /* or null */,
   "play": {"kind": "album", "id": "l.abc123"},   // what `am.py play` gets
@@ -104,12 +106,16 @@ Item = {
 }
 Track = {"id": "i.xyz", "catalogId": "…" /* or null */, "title": "…", "artist": "…", "album": "…",
          "trackNumber": 1, "discNumber": 1, "durationMs": 216000, "durationLabel": "3:36",
-         "explicit": true, "index": 0}            // index = position in group.play's queue
+         "explicit": true, "index": 0,            // index = position in group.play's queue
+         "thumb": "<cache>/thumb/<sha1>.jpg" /* or null */}  // a playlist's rows only
 ```
 
-Artwork is fetched at 512×512 into `<cache>/art/`; a path that is not on
-disk counts as no artwork. A track row plays `group.play` with
-`--start-with entry.index`.
+Artwork is fetched at 512×512 into `<cache>/art/`, and each cover has a
+256×256 thumbnail under the same name in `<cache>/thumb/` — scaled from
+the cover when it is already on disk (GdkPixbuf), fetched otherwise. The
+tiles and track rows draw the thumbnail; the detail pane's hero draws the
+cover. A path that is not on disk counts as no artwork. A track row plays
+`group.play` with `--start-with entry.index`.
 
 ## Keeping tests and dev runs off the real profile
 

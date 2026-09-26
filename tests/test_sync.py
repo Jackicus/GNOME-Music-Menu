@@ -76,6 +76,20 @@ class TestSync(unittest.TestCase):
         self.assertEqual(track["durationLabel"], "3:36")
         self.assertTrue(track["explicit"])
         self.assertEqual(track["index"], 2)
+        self.assertIsNone(track["thumb"])
+
+    def test_normalize_track_names_thumbnail_when_asked(self):
+        sync.ART_URLS.clear()
+        raw = {
+            "id": "i.one",
+            "attributes": {"name": "One", "artwork": {"url": "https://x/{w}x{h}bb.jpg"}},
+        }
+        track = sync.normalize_track(raw, index=0, cache_dir=self.tmp_dir)
+        self.assertTrue(track["thumb"].startswith(os.path.join(self.tmp_dir, "thumb")))
+        self.assertEqual(sync.ART_URLS[track["thumb"]], "https://x/256x256bb.jpg")
+        # The same cover's full-size file has the same name, one folder over.
+        self.assertEqual(os.path.basename(track["thumb"]),
+                         os.path.basename(sync.artwork_cache_path("https://x/512x512bb.jpg", self.tmp_dir)))
 
     def test_normalize_album(self):
         raw_album = {
@@ -185,6 +199,8 @@ class TestSync(unittest.TestCase):
         self.assertEqual(len(item["groups"]), 1)
         self.assertEqual(item["groups"][0]["name"], "Tracks")
         self.assertEqual(item["groups"][0]["entries"][0]["title"], "Energy")
+        self.assertIn("thumb", item)
+        self.assertIn("thumb", item["groups"][0]["entries"][0])
 
     def test_normalize_station(self):
         raw_station = {
@@ -321,28 +337,37 @@ class TestSync(unittest.TestCase):
 
     def test_prune_art(self):
         art_dir = os.path.join(self.tmp_dir, "art")
+        thumb_dir = os.path.join(self.tmp_dir, "thumb")
         os.makedirs(art_dir, exist_ok=True)
+        os.makedirs(thumb_dir, exist_ok=True)
         used_file = os.path.join(art_dir, "used.jpg")
         unused_file = os.path.join(art_dir, "unused.jpg")
+        used_thumb = os.path.join(thumb_dir, "used.jpg")
+        unused_thumb = os.path.join(thumb_dir, "unused.jpg")
+        row_thumb = os.path.join(thumb_dir, "row.jpg")
 
-        with open(used_file, "w") as f:
-            f.write("test")
-        with open(unused_file, "w") as f:
-            f.write("test")
+        for path in (used_file, unused_file, used_thumb, unused_thumb, row_thumb):
+            with open(path, "w") as f:
+                f.write("test")
 
         lib_data = {
             "sections": {
-                "albums": [{"art": used_file}],
+                "albums": [{"art": used_file, "thumb": used_thumb}],
                 "artists": [],
-                "playlists": [],
+                "playlists": [{"art": None, "thumb": None,
+                               "groups": [{"entries": [{"thumb": row_thumb}]}]}],
                 "radio": [],
             },
             "shelves": [],
         }
 
-        sync.prune_art(lib_data, self.tmp_dir)
+        pruned = sync.prune_art(lib_data, self.tmp_dir)
+        self.assertEqual(pruned, 2)
         self.assertTrue(os.path.exists(used_file))
+        self.assertTrue(os.path.exists(used_thumb))
+        self.assertTrue(os.path.exists(row_thumb))
         self.assertFalse(os.path.exists(unused_file))
+        self.assertFalse(os.path.exists(unused_thumb))
 
 
 if __name__ == "__main__":
@@ -370,6 +395,9 @@ class TestArtworkDownload(unittest.TestCase):
         item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
         self.assertTrue(item["art"].startswith(os.path.join(self.tmp_dir, "art")))
         self.assertEqual(sync.ART_URLS[item["art"]], "https://x/512x512bb.jpg")
+        self.assertTrue(item["thumb"].startswith(os.path.join(self.tmp_dir, "thumb")))
+        self.assertEqual(sync.ART_URLS[item["thumb"]], "https://x/256x256bb.jpg")
+        self.assertEqual(os.path.basename(item["thumb"]), os.path.basename(item["art"]))
 
     def test_download_art_fetches_only_missing(self):
         item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
@@ -381,35 +409,82 @@ class TestArtworkDownload(unittest.TestCase):
 
         fetched = []
 
-        def fake_cache(url, cache_dir):
+        def fake_cache(url, cache_dir, timeout=10.0, dest_path=None):
             fetched.append(url)
-            path = sync.artwork_cache_path(url, cache_dir)
+            path = dest_path or sync.artwork_cache_path(url, cache_dir)
             with open(path, "wb") as f:
                 f.write(b"img")
             return path
 
-        real = sync.cache_artwork
-        sync.cache_artwork = fake_cache
+        def fake_thumb(url, cache_dir, dest_path):
+            fetched.append(url)
+            with open(dest_path, "wb") as f:
+                f.write(b"img")
+            return dest_path
+
+        real = sync.cache_artwork, sync.cache_thumbnail
+        sync.cache_artwork, sync.cache_thumbnail = fake_cache, fake_thumb
         try:
             counts = sync.download_art(lib, self.tmp_dir, log=lambda m: None)
         finally:
-            sync.cache_artwork = real
-        self.assertEqual(fetched, ["https://x/512x512bb.jpg"])
-        self.assertEqual(counts, {"wanted": 2, "fetched": 1, "failed": 0})
+            sync.cache_artwork, sync.cache_thumbnail = real
+        # The one missing cover, then the thumbnails of both, in that order.
+        self.assertEqual(fetched[0], "https://x/512x512bb.jpg")
+        self.assertEqual(sorted(fetched[1:]), ["https://x/256x256bb.jpg", "https://y/256x256bb.jpg"])
+        self.assertEqual(counts, {"wanted": 4, "fetched": 3, "failed": 0})
         self.assertTrue(os.path.exists(item["art"]))
+        self.assertTrue(os.path.exists(item["thumb"]))
 
     def test_download_art_counts_failures(self):
         item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
         lib = {"sections": {"albums": [item]}, "shelves": []}
         logged = []
-        real = sync.cache_artwork
-        sync.cache_artwork = lambda url, cache_dir: None
+        real = sync.cache_artwork, sync.cache_thumbnail
+        sync.cache_artwork = lambda url, cache_dir, timeout=10.0, dest_path=None: None
+        sync.cache_thumbnail = lambda url, cache_dir, dest_path: None
         try:
             counts = sync.download_art(lib, self.tmp_dir, log=logged.append)
         finally:
+            sync.cache_artwork, sync.cache_thumbnail = real
+        # The cover and its thumbnail.
+        self.assertEqual(counts["failed"], 2)
+        self.assertEqual(len(logged), 2)
+
+    @unittest.skipIf(sync.GdkPixbuf is None, "GdkPixbuf not available")
+    def test_thumbnail_is_scaled_from_the_cached_cover(self):
+        item = sync.normalize_album(self._album("https://x/{w}x{h}bb.jpg"), cache_dir=self.tmp_dir)
+        os.makedirs(os.path.dirname(item["art"]), exist_ok=True)
+        cover = sync.GdkPixbuf.Pixbuf.new(sync.GdkPixbuf.Colorspace.RGB, False, 8, 512, 512)
+        cover.fill(0x336699ff)
+        cover.savev(item["art"], "jpeg", ["quality"], ["80"])
+        # Nothing is fetched: the cover is on disk.
+        real = sync.cache_artwork
+        sync.cache_artwork = lambda *a, **k: self.fail("fetched a thumbnail it could have scaled")
+        try:
+            counts = sync.download_art({item["thumb"]: sync.ART_URLS[item["thumb"]]}, self.tmp_dir)
+        finally:
             sync.cache_artwork = real
-        self.assertEqual(counts["failed"], 1)
-        self.assertEqual(len(logged), 1)
+        self.assertEqual(counts, {"wanted": 1, "fetched": 1, "failed": 0})
+        thumb = sync.GdkPixbuf.Pixbuf.new_from_file(item["thumb"])
+        self.assertEqual((thumb.get_width(), thumb.get_height()), (sync.THUMB_SIZE, sync.THUMB_SIZE))
+
+    def test_download_item_art_takes_the_rows_thumbnails_too(self):
+        raw = {"id": "p.one", "type": "library-playlists",
+               "attributes": {"name": "Mix", "artwork": {"url": "https://p/{w}x{h}bb.jpg"}}}
+        tracks = [{"id": "i.1", "attributes": {"name": "A", "artwork": {"url": "https://a/{w}x{h}bb.jpg"}}},
+                  {"id": "i.2", "attributes": {"name": "B", "artwork": {"url": "https://b/{w}x{h}bb.jpg"}}}]
+        item = sync.normalize_playlist(raw, cache_dir=self.tmp_dir, tracks=tracks)
+        asked = []
+        real = sync.download_art
+        sync.download_art = lambda urls, cache_dir, **k: asked.append(sorted(urls.values()))
+        try:
+            sync.download_item_art(item, self.tmp_dir)
+        finally:
+            sync.download_art = real
+        self.assertEqual(asked, [[
+            "https://a/256x256bb.jpg", "https://b/256x256bb.jpg",
+            "https://p/256x256bb.jpg", "https://p/512x512bb.jpg",
+        ]])
 
     def test_album_stub_without_attributes_takes_song_name(self):
         songs = [{

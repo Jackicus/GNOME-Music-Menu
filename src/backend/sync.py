@@ -17,6 +17,15 @@ import tempfile
 import urllib.error
 import urllib.request
 
+# For scaling a cached cover down to its thumbnail without fetching it again.
+# PyGObject ships with GNOME; without it thumbnails are downloaded instead.
+try:
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+except Exception:  # pragma: no cover - depends on the system
+    GdkPixbuf = None
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -145,8 +154,60 @@ def artwork_cache_path(url: str, cache_dir: str) -> str:
     return os.path.join(cache_dir, "art", artwork_filename(url))
 
 
-def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0) -> str | None:
-    """Download artwork via urllib.request and save it atomically to <cache_dir>/art/.
+# The tile size. A cover is drawn at around a hundred logical pixels on a
+# tile and a few dozen on a track row, and the shell paints a rounded cover
+# through cairo at the source image's size, so tiles take a copy scaled to
+# this rather than the 512 the hero shows. Named after the same URL as the
+# full-size file, so <cache>/thumb/<x>.jpg is the thumbnail of <cache>/art/<x>.jpg.
+THUMB_SIZE = 256
+
+
+def thumb_cache_path(url: str, cache_dir: str) -> str:
+    """The thumbnail's path for a full-size artwork URL."""
+    return os.path.join(cache_dir, "thumb", artwork_filename(url))
+
+
+def make_thumbnail(src_path: str, dest_path: str, size: int = THUMB_SIZE) -> bool:
+    """Scale the cover at `src_path` down to `dest_path`, atomically. False
+    without GdkPixbuf, or when the source is not an image."""
+    if GdkPixbuf is None:
+        return False
+    temp_path = None
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(src_path, size, size, True)
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(dest_path), delete=False, suffix=".tmp") as f:
+            temp_path = f.name
+        pixbuf.savev(temp_path, "jpeg", ["quality"], ["90"])
+        os.replace(temp_path, dest_path)
+        temp_path = None
+        return True
+    except Exception:
+        return False
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def cache_thumbnail(url: str, cache_dir: str, dest_path: str) -> str | None:
+    """The thumbnail at `dest_path`: scaled from the cached full-size cover
+    when that is on disk, fetched at THUMB_SIZE from `url` otherwise."""
+    if not url or not dest_path:
+        return None
+    if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+        return dest_path
+    full = os.path.join(cache_dir, "art", os.path.basename(dest_path))
+    if not _art_missing(full) and make_thumbnail(full, dest_path):
+        return dest_path
+    return cache_artwork(url, cache_dir, dest_path=dest_path)
+
+
+def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0, dest_path: str | None = None) -> str | None:
+    """Download artwork via urllib.request and save it atomically to <cache_dir>/art/
+    (or to `dest_path`, for a thumbnail).
 
     Accepts either an artwork URL string or an Apple Music artwork dictionary.
     Writes to a temporary file in the art directory, flushes, fsyncs, and replaces atomically.
@@ -163,8 +224,8 @@ def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0) -> str | No
     if not url:
         return None
 
-    art_dir = os.path.join(cache_dir, "art")
-    dest_path = os.path.abspath(artwork_cache_path(url, cache_dir))
+    dest_path = os.path.abspath(dest_path or artwork_cache_path(url, cache_dir))
+    art_dir = os.path.dirname(dest_path)
 
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
         return dest_path
@@ -208,12 +269,17 @@ def cache_artwork(url_or_obj, cache_dir: str, timeout: float = 10.0) -> str | No
                 pass
 
 
-# Every artwork path handed out by _extract_artwork, and the 512x512 URL it
-# came from. Normalisation only names the file; nothing is fetched until
-# download_art() runs over a finished library (or download_item_art() over a
-# single on-demand item), so a sync's hundreds of downloads happen together,
-# in threads, rather than one at a time in the middle of building each item.
+# Every artwork path handed out by _extract_artwork, and the URL it came from:
+# the 512x512 one for a cover, the THUMB_SIZE one for its thumbnail.
+# Normalisation only names the file; nothing is fetched until download_art()
+# runs over a finished library (or download_item_art() over a single
+# on-demand item), so a sync's hundreds of downloads happen together, in
+# threads, rather than one at a time in the middle of building each item.
 ART_URLS: dict[str, str] = {}
+
+
+def _is_thumb_path(path: str, cache_dir: str) -> bool:
+    return os.path.dirname(os.path.abspath(path)) == os.path.abspath(os.path.join(cache_dir, "thumb"))
 
 
 def _art_missing(path: str) -> bool:
@@ -243,53 +309,70 @@ def download_art(library_data_or_urls, cache_dir: str, workers: int = 8, log=Non
     if not todo:
         return counts
     os.makedirs(os.path.join(cache_dir, "art"), exist_ok=True)
+    os.makedirs(os.path.join(cache_dir, "thumb"), exist_ok=True)
+    # The covers first, the thumbnails after: a thumbnail is scaled from its
+    # cover when that is on disk, and fetched only when it is not.
+    covers = {p: u for p, u in todo.items() if not _is_thumb_path(p, cache_dir)}
+    thumbs = {p: u for p, u in todo.items() if _is_thumb_path(p, cache_dir)}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {pool.submit(cache_artwork, url, cache_dir): url for url in todo.values()}
-        for fut in concurrent.futures.as_completed(futures):
-            ok = False
-            try:
-                ok = bool(fut.result())
-            except Exception:
+        for batch, fetch in ((covers, lambda p, u: cache_artwork(u, cache_dir)),
+                             (thumbs, lambda p, u: cache_thumbnail(u, cache_dir, p))):
+            futures = {pool.submit(fetch, path, url): url for path, url in batch.items()}
+            for fut in concurrent.futures.as_completed(futures):
                 ok = False
-            if ok:
-                counts["fetched"] += 1
-            else:
-                counts["failed"] += 1
-                if log:
-                    log(f"artwork: could not fetch {futures[fut]}")
+                try:
+                    ok = bool(fut.result())
+                except Exception:
+                    ok = False
+                if ok:
+                    counts["fetched"] += 1
+                else:
+                    counts["failed"] += 1
+                    if log:
+                        log(f"artwork: could not fetch {futures[fut]}")
     return counts
 
 
 def download_item_art(item: dict, cache_dir: str) -> dict:
-    """Fetch one item's own artwork (and its groups' entries carry none), in place."""
-    path = item.get("art") if isinstance(item, dict) else None
-    if path and path in ART_URLS and _art_missing(path):
-        cache_artwork(ART_URLS[path], cache_dir)
+    """Fetch what one item refers to and lacks: its cover, its thumbnail and
+    its rows' thumbnails (a playlist's), in threads, in place."""
+    if not isinstance(item, dict):
+        return item
+    paths = _item_art_paths(item)
+    download_art({p: ART_URLS[p] for p in paths if p in ART_URLS}, cache_dir)
     return item
 
 
+def _item_art_paths(item: dict) -> set[str]:
+    """Every artwork path an item refers to: its own, and its rows' thumbnails."""
+    paths = set()
+    for key in ("art", "thumb"):
+        if item.get(key):
+            paths.add(os.path.abspath(item[key]))
+    for group in item.get("groups") or []:
+        for entry in group.get("entries") or []:
+            if isinstance(entry, dict) and entry.get("thumb"):
+                paths.add(os.path.abspath(entry["thumb"]))
+    return paths
+
+
 def collect_art_paths(library_data: dict) -> set[str]:
-    """Collect all referenced local artwork paths from a library data dict."""
+    """Collect all referenced local artwork paths — covers and thumbnails —
+    from a library data dict."""
     paths = set()
     for sec_items in library_data.get("sections", {}).values():
         for item in sec_items:
-            if item.get("art"):
-                paths.add(os.path.abspath(item["art"]))
+            paths |= _item_art_paths(item)
     for shelf in library_data.get("shelves", []):
         for item in shelf.get("items", []):
-            if item.get("art"):
-                paths.add(os.path.abspath(item["art"]))
+            paths |= _item_art_paths(item)
     return paths
 
 
 def prune_art(library_data: dict, cache_dir: str) -> int:
-    """Remove artwork files in <cache_dir>/art/ that the library no longer
-    refers to. Returns the count of pruned files."""
+    """Remove artwork files in <cache_dir>/art/ and <cache_dir>/thumb/ that
+    the library no longer refers to. Returns the count of pruned files."""
     if not cache_dir:
-        return 0
-
-    art_dir = os.path.join(cache_dir, "art")
-    if not os.path.isdir(art_dir):
         return 0
 
     norm_refs = set()
@@ -298,19 +381,23 @@ def prune_art(library_data: dict, cache_dir: str) -> int:
         norm_refs.add(os.path.basename(p))
 
     pruned = 0
-    try:
-        for entry in os.listdir(art_dir):
-            file_path = os.path.join(art_dir, entry)
-            abs_path = os.path.abspath(file_path)
-            if abs_path not in norm_refs and entry not in norm_refs:
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.remove(file_path)
-                        pruned += 1
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    for folder in ("art", "thumb"):
+        art_dir = os.path.join(cache_dir, folder)
+        if not os.path.isdir(art_dir):
+            continue
+        try:
+            for entry in os.listdir(art_dir):
+                file_path = os.path.join(art_dir, entry)
+                abs_path = os.path.abspath(file_path)
+                if abs_path not in norm_refs and entry not in norm_refs:
+                    try:
+                        if os.path.isfile(file_path) or os.path.islink(file_path):
+                            os.remove(file_path)
+                            pruned += 1
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
     return pruned
 
@@ -378,29 +465,41 @@ def _extract_genre(attrs: dict, raw_item: dict) -> str | None:
     return raw_item.get("genre") or None
 
 
-def _extract_artwork(attrs: dict, raw_item: dict, cache_dir: str | None) -> tuple[str | None, str | None]:
-    """Extract local cached art path and hex background color."""
+def _extract_artwork(attrs: dict, raw_item: dict, cache_dir: str | None) -> tuple[str | None, str | None, str | None]:
+    """Extract the local cached cover path, its thumbnail's, and the hex
+    background color."""
     art = None
+    thumb = None
     art_color = None
 
     if raw_item.get("art"):
         art = raw_item["art"]
+    if raw_item.get("thumb"):
+        thumb = raw_item["thumb"]
     if raw_item.get("artColor"):
         art_color = format_color(raw_item["artColor"])
 
     artwork = attrs.get("artwork") or raw_item.get("artwork")
     if isinstance(artwork, dict):
         url = artwork.get("url")
-        if url:
-            templated = template_artwork_url(url, 512, 512)
-            if cache_dir:
-                art = artwork_cache_path(templated, cache_dir)
-                ART_URLS[art] = templated
+        if url and cache_dir:
+            art, thumb = _register_artwork(url, cache_dir)
         bg = artwork.get("bgColor")
         if bg and not art_color:
             art_color = format_color(bg)
 
-    return art, art_color
+    return art, thumb, art_color
+
+
+def _register_artwork(url_template: str, cache_dir: str) -> tuple[str, str]:
+    """Name the cover and thumbnail files for an artwork URL template and
+    record what each is fetched from."""
+    full = template_artwork_url(url_template, 512, 512)
+    art = artwork_cache_path(full, cache_dir)
+    thumb = thumb_cache_path(full, cache_dir)
+    ART_URLS[art] = full
+    ART_URLS[thumb] = template_artwork_url(url_template, THUMB_SIZE, THUMB_SIZE)
+    return art, thumb
 
 
 def _extract_catalog_id(attrs: dict, raw_item: dict, resource_type: str) -> str | None:
@@ -435,17 +534,25 @@ def _extract_catalog_id(attrs: dict, raw_item: dict, resource_type: str) -> str 
 # ---------------------------------------------------------------------------
 
 
-def normalize_track(raw_track: dict, index: int = 0) -> dict:
+def normalize_track(raw_track: dict, index: int = 0, cache_dir: str | None = None) -> dict:
     """Turn an Apple Music API track into the Track shape.
 
     Track = {
       "id": "...", "catalogId": "..." | null, "title": "...", "artist": "...",
       "album": "...", "trackNumber": int, "discNumber": int, "durationMs": int,
-      "durationLabel": "3:36", "explicit": bool, "index": int
+      "durationLabel": "3:36", "explicit": bool, "index": int,
+      "thumb": "<cache>/thumb/<x>.jpg" | null
     }
+
+    `thumb` is named only when `cache_dir` is given: a playlist's rows show
+    their own artwork, an album's tracks share the album's.
     """
     attrs = raw_track.get("attributes") or {}
     track_id = str(raw_track.get("id") or "")
+    thumb = raw_track.get("thumb") or None
+    artwork = attrs.get("artwork")
+    if cache_dir and isinstance(artwork, dict) and artwork.get("url"):
+        _, thumb = _register_artwork(artwork["url"], cache_dir)
 
     catalog_id = _extract_catalog_id(attrs, raw_track, "songs")
 
@@ -493,6 +600,7 @@ def normalize_track(raw_track: dict, index: int = 0) -> dict:
         "durationLabel": duration_label,
         "explicit": is_explicit,
         "index": int(index),
+        "thumb": thumb,
     }
 
 
@@ -510,7 +618,7 @@ def normalize_album(raw_album: dict, cache_dir: str | None = None, tracks: list[
     year = _extract_year(attrs, raw_album)
     genre = _extract_genre(attrs, raw_album)
     summary = _extract_summary(attrs, raw_album)
-    art, art_color = _extract_artwork(attrs, raw_album, cache_dir)
+    art, thumb, art_color = _extract_artwork(attrs, raw_album, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_album, "albums")
     url = attrs.get("url") or raw_album.get("url")
 
@@ -596,6 +704,7 @@ def normalize_album(raw_album: dict, cache_dir: str | None = None, tracks: list[
         "genre": genre,
         "summary": summary,
         "art": art,
+        "thumb": thumb,
         "artColor": art_color,
         "countLabel": count_label,
         "explicit": is_explicit,
@@ -620,7 +729,7 @@ def normalize_artist(raw_artist: dict, cache_dir: str | None = None, albums: lis
     year = None
     genre = _extract_genre(attrs, raw_artist)
     summary = _extract_summary(attrs, raw_artist)
-    art, art_color = _extract_artwork(attrs, raw_artist, cache_dir)
+    art, thumb, art_color = _extract_artwork(attrs, raw_artist, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_artist, "artists")
     url = attrs.get("url") or raw_artist.get("url")
 
@@ -671,6 +780,7 @@ def normalize_artist(raw_artist: dict, cache_dir: str | None = None, albums: lis
         "genre": genre,
         "summary": summary,
         "art": art,
+        "thumb": thumb,
         "artColor": art_color,
         "countLabel": count_label,
         "explicit": has_explicit,
@@ -700,7 +810,7 @@ def normalize_playlist(raw_playlist: dict, cache_dir: str | None = None, tracks:
     year = _extract_year(attrs, raw_playlist)
     genre = _extract_genre(attrs, raw_playlist)
     summary = _extract_summary(attrs, raw_playlist)
-    art, art_color = _extract_artwork(attrs, raw_playlist, cache_dir)
+    art, thumb, art_color = _extract_artwork(attrs, raw_playlist, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_playlist, "playlists")
     url = attrs.get("url") or raw_playlist.get("url")
 
@@ -713,7 +823,7 @@ def normalize_playlist(raw_playlist: dict, cache_dir: str | None = None, tracks:
             raw_tracks = []
 
     normalized_tracks = [
-        normalize_track(t, index=idx)
+        normalize_track(t, index=idx, cache_dir=cache_dir)
         for idx, t in enumerate(raw_tracks)
     ]
 
@@ -754,6 +864,7 @@ def normalize_playlist(raw_playlist: dict, cache_dir: str | None = None, tracks:
         "genre": genre,
         "summary": summary,
         "art": art,
+        "thumb": thumb,
         "artColor": art_color,
         "countLabel": count_label,
         "explicit": is_explicit,
@@ -782,7 +893,7 @@ def normalize_station(raw_station: dict, cache_dir: str | None = None) -> dict:
     year = None
     genre = _extract_genre(attrs, raw_station)
     summary = _extract_summary(attrs, raw_station)
-    art, art_color = _extract_artwork(attrs, raw_station, cache_dir)
+    art, thumb, art_color = _extract_artwork(attrs, raw_station, cache_dir)
     catalog_id = _extract_catalog_id(attrs, raw_station, "stations")
     url = attrs.get("url") or raw_station.get("url")
 
@@ -802,6 +913,7 @@ def normalize_station(raw_station: dict, cache_dir: str | None = None) -> dict:
         "genre": genre,
         "summary": summary,
         "art": art,
+        "thumb": thumb,
         "artColor": art_color,
         "countLabel": None,
         "explicit": is_explicit,
@@ -818,7 +930,7 @@ def normalize_song_as_item(raw_song: dict, cache_dir: str | None = None) -> dict
     item_id = str(raw_song.get("id") or "")
     catalog_id = _extract_catalog_id(attrs, raw_song, "songs")
 
-    art, art_color = _extract_artwork(attrs, raw_song, cache_dir)
+    art, thumb, art_color = _extract_artwork(attrs, raw_song, cache_dir)
     duration_ms = attrs.get("durationInMillis") if attrs.get("durationInMillis") is not None else raw_song.get("durationMs", 0)
     try:
         duration_ms = int(duration_ms)
@@ -837,6 +949,7 @@ def normalize_song_as_item(raw_song: dict, cache_dir: str | None = None) -> dict
         "genre": genre,
         "summary": None,
         "art": art,
+        "thumb": thumb,
         "artColor": art_color,
         "countLabel": format_duration(duration_ms),
         "explicit": attrs.get("contentRating") == "explicit" or attrs.get("explicit") is True,
