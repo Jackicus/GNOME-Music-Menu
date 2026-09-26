@@ -64,7 +64,7 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `status` | `{engine, authorized, storefront, bitrate}` |
 | `sync [--only albums\|artists\|playlists\|radio\|shelves]` | Writes library.json (merged per section, under `flock`) and fetches missing artwork in threads. `{counts, generated}` |
 | `item <kind> <id>` | One full item with its `groups`, for a shelf or search result picked on demand; fetches its artwork too |
-| `play <kind> <id> [--start-with N] [--shuffle]` | `{ok: true}`. kind ∈ `album playlist station song artist` |
+| `play <kind> <id> [--start-with N] [--shuffle]` | `{ok: true}`. kind ∈ `album playlist station song musicVideo artist` |
 | `play-next <kind> <id>`, `play-later <kind> <id>` | `{ok: true}` |
 | `control play\|pause\|toggle\|next\|previous\|stop`, `seek <sec>`, `volume <0..1>` | `{ok: true}` |
 | `shuffle on\|off\|toggle`, `repeat none\|one\|all\|cycle` | `{shuffle, repeat}` |
@@ -73,7 +73,10 @@ without `gschemas.compiled` there, the defaults stand. `sync` writes
 | `love\|unlove <kind> <id>`, `add-to-library <kind> <id>` | `{ok: true}` |
 | `playlists`, `add-to-playlist <playlistId> <songId>` | `{items: [{id, title}]}`, `{ok: true}` |
 | `lyrics <catalogSongId>` | `{synced, lines: [{startMs, endMs, text}]}`, cached under `<cache>/lyrics/` |
-| `search <term> [--library] [--limit N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (`meta.results.order`: Top Results, then Artists, Songs, Albums, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A hit's `art` is its cached cover or, unfetched, a 256px catalog URL; its `thumb` is null unless on disk |
+| `search <term> [--library] [--limit N]` | `{shelves: [{key, title, items: [Item without groups]}], items: [the same, flat, no repeats]}` — the shelves in Apple's own order (`meta.results.order`: Top Results, then Artists, Songs, Albums, Playlists, Stations; `--limit` is per kind), for the search in the library; the flat list for the overview's provider. A music video is an Item of kind `video`, played as MusicKit's `musicVideo`. A hit's `art` is its cached cover or, unfetched, a 256px catalog URL; its `thumb` is null unless on disk |
+| `suggest <term> [--limit N]` | `{terms: [{term, display}], items: [Item without groups]}` — Apple's own autocomplete for a term half typed (`search/suggestions`): the few searches it would complete it to, and its best few hits for it as it stands, art as `search` has it |
+| `landing` | `{categories: [{id, kind: "category", title, subtitle, art, artColor, url}]}` — the "Browse Categories" of Apple Music's own search page before anything is typed (the `search-landing` recommendation set): Apple's curators, Rock to Wellbeing, in Apple's order; `art` a 320px catalog URL the shell fetches itself, `artColor` the tile's colour |
+| `category <id>` | `{id, title, shelves: [{key, title, items: [Item without groups]}]}` — a category's page: the curator's grouping as shelves (Best New Songs, New Releases, Playlists, Stations…), items as `search` has them |
 
 ## `library.json`
 

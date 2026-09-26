@@ -891,6 +891,39 @@ def handle_search(term, library=False, limit=20, no_start=False):
         client.close()
 
 
+def handle_suggest(term, limit=10, no_start=False):
+    client = get_bridge_client(no_start=no_start)
+    try:
+        res = client.evaluate(f"window.__musicMenu.suggest({json.dumps(term)}, {int(limit)})", await_promise=True)
+        return sync.search_suggestions(res, get_cache_dir())
+    except Exception as e:
+        raise AmError("api", f"Suggestions failed: {e}")
+    finally:
+        client.close()
+
+
+def handle_landing(no_start=False):
+    client = get_bridge_client(no_start=no_start)
+    try:
+        res = client.evaluate("window.__musicMenu.searchLanding()", await_promise=True)
+        return sync.search_landing(res, get_cache_dir())
+    except Exception as e:
+        raise AmError("api", f"Search landing failed: {e}")
+    finally:
+        client.close()
+
+
+def handle_category(category_id, no_start=False):
+    client = get_bridge_client(no_start=no_start)
+    try:
+        res = client.evaluate(f"window.__musicMenu.category({json.dumps(category_id)})", await_promise=True)
+        return sync.category_page(res, get_cache_dir())
+    except Exception as e:
+        raise AmError("api", f"Category failed: {e}")
+    finally:
+        client.close()
+
+
 # ---------------------------------------------------------------------------
 # CLI Argument Parsing & Dispatch
 # ---------------------------------------------------------------------------
@@ -947,6 +980,11 @@ def _build_parser():
     s.add_argument("term", nargs="+")
     s.add_argument("--library", action="store_true")
     s.add_argument("--limit", type=int, default=20, metavar="N")
+    s = cmd("suggest")
+    s.add_argument("term", nargs="+")
+    s.add_argument("--limit", type=int, default=10, metavar="N")
+    cmd("landing")
+    cmd("category").add_argument("category_id", metavar="id")
     return p
 
 
@@ -1005,6 +1043,15 @@ def run_cli(argv):
         if not term:
             raise AmError("usage", "search requires a search term")
         return handle_search(term, library=a.library, limit=a.limit, no_start=ns)
+    if c == "suggest":
+        term = " ".join(a.term).strip()
+        if not term:
+            raise AmError("usage", "suggest requires a search term")
+        return handle_suggest(term, limit=a.limit, no_start=ns)
+    if c == "landing":
+        return handle_landing(no_start=ns)
+    if c == "category":
+        return handle_category(a.category_id, no_start=ns)
     raise AmError("usage", f"Unknown command: {c}")
 
 

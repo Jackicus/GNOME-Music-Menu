@@ -79,6 +79,16 @@ class Cli(unittest.TestCase):
         self.assertEqual(parse(["search", "daft punk", "--library"]),
                          ("handle_search", ("daft punk",), {"library": True, "limit": 20, "no_start": False}))
 
+    def test_suggest(self):
+        self.assertEqual(parse(["suggest", "sho", "--limit", "5", "--no-start"]),
+                         ("handle_suggest", ("sho",), {"limit": 5, "no_start": True}))
+        self.assertEqual(parse(["suggest", "shout", "out"]),
+                         ("handle_suggest", ("shout out",), {"limit": 10, "no_start": False}))
+
+    def test_landing_and_category(self):
+        self.assertEqual(parse(["landing", "--no-start"]), ("handle_landing", (), {"no_start": True}))
+        self.assertEqual(parse(["category", "988581516"]), ("handle_category", ("988581516",), {"no_start": False}))
+
     def test_usage_errors(self):
         for argv in ([], ["bogus"], ["engine"], ["engine", "dance"], ["play", "album"],
                      ["play", "album", "1", "--start-with", "x"], ["sync", "--only", "films"],

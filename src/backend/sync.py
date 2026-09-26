@@ -973,8 +973,14 @@ def normalize_item(raw_item: dict, cache_dir: str | None = None, include_groups:
         item = normalize_artist(raw_item, cache_dir=cache_dir)
     elif raw_type in ("stations", "radio-stations", "apple-curators") or raw_kind == "station":
         item = normalize_station(raw_item, cache_dir=cache_dir)
-    elif raw_type in ("songs", "library-songs", "music-videos") or raw_kind == "song":
+    elif raw_type in ("songs", "library-songs") or raw_kind == "song":
         item = normalize_song_as_item(raw_item, cache_dir=cache_dir)
+    elif raw_type in ("music-videos", "library-music-videos") or raw_kind == "video":
+        # A music video is a song with a picture: the same fields, played
+        # as MusicKit's own `musicVideo` queue kind.
+        item = normalize_song_as_item(raw_item, cache_dir=cache_dir)
+        item["kind"] = "video"
+        item["play"] = {"kind": "musicVideo", "id": item["id"]}
     else:
         attrs = raw_item.get("attributes") or {}
         if "trackCount" in attrs or "artistName" in attrs:
@@ -1001,13 +1007,14 @@ SEARCH_SHELF_TITLES = {
     "library-songs": "Songs",
     "playlists": "Playlists",
     "library-playlists": "Playlists",
+    "music-videos": "Music Videos",
     "stations": "Stations",
 }
 # The order the shelves take when the answer does not say: Apple's own for
 # a search of this kind, as its `meta.results.order` has it.
 SEARCH_SHELF_ORDER = [
     "topResults", "artists", "library-artists", "songs", "library-songs",
-    "albums", "library-albums", "playlists", "library-playlists", "stations",
+    "albums", "library-albums", "playlists", "library-playlists", "music-videos", "stations",
 ]
 
 
@@ -1050,6 +1057,133 @@ def search_results(raw: dict | None, cache_dir: str) -> dict:
             shelf_key = "top" if key == "topResults" else key.removeprefix("library-")
             shelves.append({"key": shelf_key, "title": SEARCH_SHELF_TITLES[key], "items": hits})
     return {"shelves": shelves, "items": items}
+
+
+def search_suggestions(raw: dict | None, cache_dir: str) -> dict:
+    """`am.py suggest`'s answer from MusicKit's `search/suggestions`:
+    `terms`, the few searches Apple would complete the typed one to, each
+    `{term, display}` — `term` what to search for, `display` as Apple
+    shows it — with no repeats; and `items`, its best few hits for what is
+    typed so far, as `search_results` has its hits (no groups, art as it
+    stands)."""
+    suggestions = ((raw or {}).get("results") or {}).get("suggestions") or []
+    terms = []
+    items = []
+    seen_terms = set()
+    seen_items = set()
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict):
+            continue
+        kind = suggestion.get("kind")
+        if kind == "terms":
+            term = str(suggestion.get("searchTerm") or suggestion.get("displayTerm") or "").strip()
+            if not term or term.lower() in seen_terms:
+                continue
+            seen_terms.add(term.lower())
+            terms.append({"term": term, "display": str(suggestion.get("displayTerm") or term).strip()})
+        elif kind == "topResults":
+            content = suggestion.get("content")
+            if not isinstance(content, dict):
+                continue
+            item = normalize_item(content, cache_dir, include_groups=False)
+            _settle_search_art(item, content)
+            if (item["kind"], item["id"]) in seen_items:
+                continue
+            seen_items.add((item["kind"], item["id"]))
+            items.append(item)
+    return {"terms": terms, "items": items}
+
+
+def search_landing(raw: dict | None, cache_dir: str) -> dict:
+    """`am.py landing`'s answer from Apple's search-landing recommendations:
+    `categories`, the rooms Apple Music's own search page offers to browse
+    before anything is typed (Rock, Hip-Hop, Chill, the decades…), in
+    Apple's order across every recommendation in the set, each
+    `{id, kind: "category", title, subtitle, art, artColor, url}` — `title`
+    the short name on the tile ("Rock"), `subtitle` the curator's own
+    ("Apple Music Rock"), `art` a small catalog URL the shell fetches on
+    its own, `artColor` the tile's colour behind it. Only Apple's curators
+    are categories: an editorial item in the set is a banner with nothing
+    behind it, and is left out."""
+    categories = []
+    seen = set()
+    for rec in (raw or {}).get("data") or []:
+        if not isinstance(rec, dict):
+            continue
+        contents = ((rec.get("relationships") or {}).get("contents") or {}).get("data") or []
+        for content in contents:
+            if not isinstance(content, dict) or content.get("type") != "apple-curators":
+                continue
+            category = normalize_category(content)
+            if not category or category["id"] in seen:
+                continue
+            seen.add(category["id"])
+            categories.append(category)
+    return {"categories": categories}
+
+
+def normalize_category(raw: dict) -> dict | None:
+    """An Apple curator as a category tile. None without a name."""
+    attrs = raw.get("attributes") or {}
+    item_id = str(raw.get("id") or "")
+    name = str(attrs.get("name") or "").strip()
+    short = str(attrs.get("shortName") or "").strip()
+    if not item_id or not (name or short):
+        return None
+    artwork = attrs.get("artwork") if isinstance(attrs.get("artwork"), dict) else {}
+    url = artwork.get("url")
+    return {
+        "id": item_id,
+        "kind": "category",
+        "title": short or name,
+        "subtitle": name if name and name != (short or name) else None,
+        "art": template_artwork_url(url, CATEGORY_ART_SIZE, CATEGORY_ART_SIZE) if url else None,
+        "artColor": format_color(artwork.get("bgColor")) if artwork.get("bgColor") else None,
+        "url": attrs.get("url"),
+    }
+
+
+# A category tile's picture, wide but not big: the shell draws it cropped
+# over the tile's colour.
+CATEGORY_ART_SIZE = 320
+
+
+def category_page(raw: dict | None, cache_dir: str) -> dict:
+    """`am.py category`'s answer from a curator with its grouping: the
+    category's `id` and `title`, and its `shelves` — the grouping's one
+    tab's editorial elements, each `{key, title, items}` in Apple's order,
+    items normalised as a search hit is (no groups, art as it stands);
+    an element with no title or nothing in it is left out."""
+    data = (raw or {}).get("data") or []
+    curator = data[0] if data and isinstance(data[0], dict) else {}
+    attrs = curator.get("attributes") or {}
+    title = str(attrs.get("shortName") or attrs.get("name") or "").strip()
+    shelves = []
+    groupings = ((curator.get("relationships") or {}).get("grouping") or {}).get("data") or []
+    for grouping in groupings:
+        if not isinstance(grouping, dict):
+            continue
+        tabs = ((grouping.get("relationships") or {}).get("tabs") or {}).get("data") or []
+        for tab in tabs:
+            if not isinstance(tab, dict):
+                continue
+            children = ((tab.get("relationships") or {}).get("children") or {}).get("data") or []
+            for index, element in enumerate(children):
+                if not isinstance(element, dict):
+                    continue
+                element_attrs = element.get("attributes") or {}
+                shelf_title = str(element_attrs.get("title") or element_attrs.get("name") or "").strip()
+                contents = ((element.get("relationships") or {}).get("contents") or {}).get("data") or []
+                items = []
+                for raw_item in contents:
+                    if not isinstance(raw_item, dict) or not (raw_item.get("attributes") or {}).get("name"):
+                        continue
+                    item = normalize_item(raw_item, cache_dir, include_groups=False)
+                    _settle_search_art(item, raw_item)
+                    items.append(item)
+                if shelf_title and items:
+                    shelves.append({"key": f"cat-{element.get('id') or index}", "title": shelf_title, "items": items})
+    return {"id": str(curator.get("id") or ""), "title": title, "shelves": shelves}
 
 
 def _settle_search_art(item: dict, raw_item: dict) -> None:

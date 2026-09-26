@@ -278,6 +278,108 @@ class TestSync(unittest.TestCase):
         out = sync.search_results(raw, self.tmp_dir)
         self.assertEqual([s["key"] for s in out["shelves"]], ["artists", "albums", "stations"])
 
+    def test_search_results_shelve_music_videos_as_videos(self):
+        raw = {"results": {
+            "music-videos": {"data": [{"id": "9", "type": "music-videos", "attributes": {
+                "name": "Around the World", "artistName": "Daft Punk", "durationInMillis": 240000,
+                "artwork": {"url": "https://x/{w}x{h}bb.{f}"}}}]},
+        }}
+        out = sync.search_results(raw, self.tmp_dir)
+        self.assertEqual([(s["key"], s["title"]) for s in out["shelves"]], [("music-videos", "Music Videos")])
+        video = out["shelves"][0]["items"][0]
+        self.assertEqual(video["kind"], "video")
+        self.assertEqual(video["title"], "Around the World")
+        self.assertEqual(video["subtitle"], "Daft Punk")
+        self.assertEqual(video["play"], {"kind": "musicVideo", "id": "9"})
+        self.assertIn("256x256", video["art"])
+
+    def test_search_suggestions_are_terms_and_top_hits(self):
+        raw = {"results": {"suggestions": [
+            {"kind": "terms", "searchTerm": "shout", "displayTerm": "shout"},
+            {"kind": "terms", "searchTerm": "shout out to my ex", "displayTerm": "shout out to my ex"},
+            {"kind": "terms", "searchTerm": "Shout", "displayTerm": "Shout"},
+            {"kind": "topResults", "content": {"id": "1", "type": "songs", "attributes": {
+                "name": "Shout", "artistName": "Tears for Fears", "durationInMillis": 1000}}},
+            {"kind": "topResults", "content": {"id": "1", "type": "songs", "attributes": {
+                "name": "Shout", "artistName": "Tears for Fears", "durationInMillis": 1000}}},
+            {"kind": "topResults", "content": {"id": "2", "type": "artists", "attributes": {"name": "Shout"}}},
+            {"kind": "topResults", "content": "not a resource"},
+            "not a suggestion",
+        ]}}
+        out = sync.search_suggestions(raw, self.tmp_dir)
+        self.assertEqual(out["terms"], [{"term": "shout", "display": "shout"},
+                                        {"term": "shout out to my ex", "display": "shout out to my ex"}])
+        self.assertEqual([(it["kind"], it["id"], it["title"]) for it in out["items"]],
+                         [("song", "1", "Shout"), ("artist", "2", "Shout")])
+        self.assertEqual(out["items"][0]["groups"], [])
+        self.assertIsNone(out["items"][0]["art"])
+
+    def test_search_suggestions_with_nothing(self):
+        self.assertEqual(sync.search_suggestions(None, self.tmp_dir), {"terms": [], "items": []})
+        self.assertEqual(sync.search_suggestions({"results": {}}, self.tmp_dir), {"terms": [], "items": []})
+
+    def test_search_landing_is_apples_curators_in_order(self):
+        curator = lambda cid, name, short=None, bg="dd6848": {  # noqa: E731
+            "id": cid, "type": "apple-curators", "attributes": {
+                "name": name, "shortName": short or name, "url": f"https://music.apple.com/gb/curator/x/{cid}",
+                "artwork": {"url": "https://x/{w}x{h}{c}.{f}", "bgColor": bg, "width": 1080, "height": 1080}}}
+        raw = {"data": [
+            {"id": "r1", "type": "personal-recommendation", "attributes": {"title": {"stringForDisplay": "Browse Categories"}},
+             "relationships": {"contents": {"data": [curator("1", "Apple Music Live")]}}},
+            {"id": "r2", "type": "personal-recommendation",
+             "relationships": {"contents": {"data": [
+                 curator("2", "Apple Music Rock", "Rock"),
+                 {"id": "e1", "type": "editorial-items", "attributes": {"editorialArtwork": {}}},
+                 curator("2", "Apple Music Rock", "Rock"),
+                 {"id": "3", "type": "apple-curators", "attributes": {"artwork": {}}},
+                 "junk",
+             ]}}},
+        ]}
+        out = sync.search_landing(raw, self.tmp_dir)
+        self.assertEqual([(c["id"], c["title"], c["subtitle"]) for c in out["categories"]],
+                         [("1", "Apple Music Live", None), ("2", "Rock", "Apple Music Rock")])
+        rock = out["categories"][1]
+        self.assertEqual(rock["kind"], "category")
+        self.assertEqual(rock["art"], "https://x/320x320bb.jpg")
+        self.assertEqual(rock["artColor"], "#dd6848")
+        self.assertEqual(rock["url"], "https://music.apple.com/gb/curator/x/2")
+        self.assertEqual(sync.search_landing(None, self.tmp_dir), {"categories": []})
+
+    def test_category_page_is_the_groupings_shelves(self):
+        element = lambda eid, name, contents: {  # noqa: E731
+            "id": eid, "type": "editorial-elements", "attributes": {"editorialElementKind": "326", "name": name},
+            "relationships": {"contents": {"data": contents}}}
+        raw = {"data": [{
+            "id": "988581516", "type": "apple-curators",
+            "attributes": {"name": "Apple Music Rock", "shortName": "Rock"},
+            "relationships": {"grouping": {"data": [{
+                "id": "g", "type": "groupings", "attributes": {"name": "Rock"},
+                "relationships": {"tabs": {"data": [{
+                    "id": "t", "type": "editorial-elements",
+                    "relationships": {"children": {"data": [
+                        element("hero", "", []),
+                        element("songs", "Best New Songs", [
+                            {"id": "s1", "type": "songs", "attributes": {"name": "Silencio", "artistName": "A", "durationInMillis": 1000}},
+                            {"id": "s2", "type": "songs"},
+                        ]),
+                        element("albums", "New Releases", [
+                            {"id": "a1", "type": "albums", "attributes": {"name": "Stray Dogs", "artistName": "B",
+                                                                           "artwork": {"url": "https://x/{w}x{h}{c}.{f}"}}},
+                        ]),
+                        element("empty", "Nothing Here", []),
+                    ]}}}]}}}]}},
+        }]}
+        out = sync.category_page(raw, self.tmp_dir)
+        self.assertEqual(out["id"], "988581516")
+        self.assertEqual(out["title"], "Rock")
+        self.assertEqual([(s["key"], s["title"], len(s["items"])) for s in out["shelves"]],
+                         [("cat-songs", "Best New Songs", 1), ("cat-albums", "New Releases", 1)])
+        self.assertEqual(out["shelves"][0]["items"][0]["kind"], "song")
+        album = out["shelves"][1]["items"][0]
+        self.assertEqual(album["groups"], [])
+        self.assertIn("256x256", album["art"])
+        self.assertEqual(sync.category_page(None, self.tmp_dir), {"id": "", "title": "", "shelves": []})
+
     def test_normalize_station(self):
         raw_station = {
             "id": "ra.12345",

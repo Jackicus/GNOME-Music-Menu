@@ -458,11 +458,58 @@
             const sf = mk.storefrontId || 'us';
             const types = isLibrary
                 ? 'library-albums,library-artists,library-playlists,library-songs'
-                : 'albums,artists,playlists,songs,stations';
+                : 'albums,artists,music-videos,playlists,songs,stations';
             const path = isLibrary ? '/v1/me/library/search' : `/v1/catalog/${sf}/search`;
             const params = { term: term, types: types, limit: limit || 20 };
             if (!isLibrary) params.with = 'topResults';
             return await apiCall(path, params);
+        },
+
+        // Apple's own autocomplete for a term half typed: the few searches
+        // it would complete it to (`kind: 'terms'`) and its best few hits
+        // for it as it stands (`kind: 'topResults'`), which is what the
+        // search box on music.apple.com drops down as it is typed into.
+        suggest: async function (term, limit) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const sf = mk.storefrontId || 'us';
+            return await apiCall(`/v1/catalog/${sf}/search/suggestions`, {
+                term: term,
+                kinds: 'terms,topResults',
+                types: 'albums,artists,music-videos,playlists,songs,stations',
+                limit: limit || 10
+            });
+        },
+
+        // Apple Music's own search page before anything is typed: the
+        // "Browse Categories" it offers (Rock, Hip-Hop, Chill, the
+        // decades…), which are Apple's own curators, asked for the way
+        // music.apple.com asks for them — a recommendation set by name.
+        searchLanding: async function () {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const sf = mk.storefrontId || 'us';
+            return await apiCall(`/v1/recommendations/${sf}`, {
+                name: 'search-landing',
+                types: 'activities,apple-curators,editorial-items',
+                extend: 'editorialArtwork',
+                platform: 'web'
+            });
+        },
+
+        // A category's page: the curator with its grouping, whose one tab
+        // is a run of editorial elements — Best New Songs, New Releases,
+        // Playlists, Stations… — each a shelf. Not with `omit[resource]`:
+        // the shelves' contents are what Apple calls autos, and go with it.
+        category: async function (id) {
+            const mk = getMusicKit();
+            if (!mk) throw new Error('MusicKit not initialized');
+            const sf = mk.storefrontId || 'us';
+            return await apiCall(`/v1/catalog/${sf}/apple-curators/${encodeURIComponent(id)}`, {
+                include: 'grouping',
+                extend: 'editorialArtwork',
+                platform: 'web'
+            });
         }
     };
 })();
