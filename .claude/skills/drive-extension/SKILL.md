@@ -45,6 +45,7 @@ walkthrough is **one** tool call, and it stops at the first failing step:
 |---|---|
 | `say TEXT` | Banner in the nested shell (≤ ~40 chars). Put one before every click or check. |
 | `click X Y` / `move X Y` | Click / hover at desktop coordinates |
+| `scroll X Y [N]` | Turn the wheel N notches (default 3, negative is up) with the pointer there — a shelf list, a track list |
 | `key KEYSYM` | `Escape`, `Return`, arrows, `F1`–`F12`, a remote's `XF86OK`/`XF86Back`/`XF86HomePage`/`XF86ChannelUp`…, one character, or a chord like `Super+Page_Down` |
 | `wait SECS` | Let an animation land: ~1 s after anything that changes workspace (the button, a tab switch that claims or releases one), ~0.6 s after opening or closing an item |
 | `shot [FILE [X Y W H]]` | Screenshot, or **just a region** — crop to what you are checking (a header strip, one tile) rather than reading 1600×900 every time |

@@ -251,6 +251,16 @@ class Driver:
     def click(self, x, y):
         return self.move(x, y, press=True)
 
+    def scroll(self, x, y, steps=3):
+        """The wheel at (x, y): STEPS notches, down when positive."""
+        self.move(x, y)
+        steps = int(steps)
+        for _ in range(abs(steps)):
+            self._notify("NotifyPointerAxisDiscrete", "(ui)", 0, 1 if steps > 0 else -1)
+            time.sleep(0.05)
+        time.sleep(0.2)
+        return f"scrolled {steps} at ({x}, {y})"
+
     def key(self, combo):
         parts = combo.split("+") if combo != "+" else ["+"]
         keysyms = [_keysym(p) for p in parts]
@@ -324,7 +334,7 @@ class Driver:
             time.sleep(OVERVIEW_SETTLE)
         return f"overview {state}"
 
-    STEPS = {"say", "click", "move", "key", "wait", "shot", "window", "overview"}
+    STEPS = {"say", "click", "move", "scroll", "key", "wait", "shot", "window", "overview"}
 
     def run(self, argv):
         if not argv or argv[0] not in self.STEPS:

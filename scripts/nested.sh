@@ -17,7 +17,8 @@
 #                                     screenshots (docs/screenshots/) are taken of
 #   ./scripts/nested.sh do "STEP" "STEP"...
 #                                     run several steps in one go (one connection):
-#                                     say TEXT | click X Y | move X Y | key KEYSYM |
+#                                     say TEXT | click X Y | move X Y | scroll X Y [N] |
+#                                     key KEYSYM |
 #                                     wait SECS | shot [FILE [X Y W H]] | window FILE |
 #                                     overview on|off
 #   ./scripts/nested.sh say TEXT      flash TEXT as an on-screen banner in the nested
@@ -26,6 +27,7 @@
 #                                     screenshot the nested desktop (or one region)
 #   ./scripts/nested.sh click X Y     click at those desktop coordinates
 #   ./scripts/nested.sh move X Y      move the pointer there (hover) without clicking
+#   ./scripts/nested.sh scroll X Y [N] turn the wheel N notches there (default 3; negative is up)
 #   ./scripts/nested.sh key KEYSYM    press a key or chord (Escape, Super+Page_Down, ...)
 #   ./scripts/nested.sh overview on|off   show/hide the Activities overview
 #   ./scripts/nested.sh reload        disable/enable Music Menu inside the nested shell
@@ -538,7 +540,7 @@ case "$cmd" in
     stop)        cmd_stop "$@" ;;
     session-end) cmd_session_end ;;
     do)          cmd_do "$@" ;;
-    shot|click|move|key|overview|say)
+    shot|click|move|scroll|key|overview|say)
                  cmd_step "$cmd" "$@" ;;
     mirror)      cmd_mirror "${1:-}" ;;
     reload)      cmd_reload ;;
